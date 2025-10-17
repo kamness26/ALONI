@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual environments
+venv/
+.env/
+
+# Logs / screenshots
+logs/
+screenshots/
+
+# macOS
+.DS_Store
