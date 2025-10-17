@@ -1,0 +1,42 @@
+name: ALONI Auto Booking
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # runs daily at midnight EST (4 AM UTC)
+  workflow_dispatch:       # allows manual runs from the Actions tab
+
+jobs:
+  run-aloni:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps
+
+      - name: Run ALONI booking script
+        env:
+          COREPOWER_EMAIL: ${{ secrets.COREPOWER_EMAIL }}
+          COREPOWER_PASSWORD: ${{ secrets.COREPOWER_PASSWORD }}
+        run: |
+          echo "🧘 Starting ALONI automation..."
+          python scripts/book_class_mvp_v3_1.py
+
+      - name: Upload screenshot if failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aloni-screenshots
+          path: error_screenshot.png
+
