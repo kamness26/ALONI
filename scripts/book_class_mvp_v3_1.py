@@ -1,82 +1,154 @@
 # scripts/book_class_mvp_v3_1.py
+# ALONI 2.9.3 — Production-ready CI-compatible build
 
 import os
 import sys
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
+# ----------------------------------------------------------------------
+#  Utility functions
+# ----------------------------------------------------------------------
 
 def _ci() -> bool:
     return os.getenv("CI") == "true"
-
 
 def _get_env_or_die(key: str) -> str:
     val = os.getenv(key, "").strip()
     if not val:
         raise RuntimeError(
             f"Missing required environment variable: {key}. "
-            "In GitHub, set it under Settings → Secrets and variables → Actions, "
-            "then expose it via env: in your workflow."
+            "Set it under Settings → Secrets → Actions and expose via env in workflow."
         )
     return val
-
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
 
+def _target_date(days_ahead: int = 13):
+    return datetime.now().date() + timedelta(days=days_ahead)
 
-def _target_date(days_ahead: int = 13) -> datetime:
-    return (datetime.now()).date() + timedelta(days=days_ahead)
-
+# ----------------------------------------------------------------------
+#  Core logic
+# ----------------------------------------------------------------------
 
 def main() -> None:
     email = _get_env_or_die("COREPOWER_EMAIL")
     password = _get_env_or_die("COREPOWER_PASSWORD")
 
     target = _target_date(13)
-    _log("🚀 Starting ALONI 2.9.2 – Verified Booking Flow…")
-    _log(f"📅 Target date: {target.strftime('%A, %b %d')} (13 days from today)")
+    weekday = target.strftime("%A")
+    _log("🚀 Starting ALONI 2.9.3 – Verified Booking Flow…")
+    _log(f"📅 Target date: {weekday}, {target.strftime('%b %d')} (13 days from today)")
 
-    # Headless & speed settings for CI vs local
-    headless = True if _ci() else False   # headed locally if you want to watch; headless in CI
+    # Only book on Mon/Tue/Wed
+    valid_days = ["Monday", "Tuesday", "Wednesday"]
+    if weekday not in valid_days:
+        _log(f"ℹ️ Skipping — {weekday} is not a booking day.")
+        return
+
+    headless = True if _ci() else False
     slow_mo = 0 if _ci() else 150
 
     with sync_playwright() as p:
-        # *** CRITICAL FIX: run headless in CI ***
         browser = p.chromium.launch(headless=headless, slow_mo=slow_mo)
-
-        # Optional: capture artifacts to debug CI runs
         context = browser.new_context(record_video_dir="videos" if _ci() else None)
         page = context.new_page()
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
 
         try:
-            # ----------------------------
-            # YOUR EXISTING FLOW STARTS
-            # ----------------------------
-            #
-            # Keep your existing navigation, cookie banner handling, login,
-            # calendar selection, 6:15 PM class selection, booking, etc.
-            #
-            # Example log markers you likely already use:
-            # _log("✅ Login successful")
-            # _log(f"ℹ️ Weekday/Time window condition not met for {target}")
-            # _log("✅ Booking completed")
-            #
-            # ----------------------------
-            # YOUR EXISTING FLOW ENDS
-            # ----------------------------
+            # ------------------------------------------------------------------
+            # 1. Open CorePower homepage
+            # ------------------------------------------------------------------
+            _log("🏠 Opening CorePower homepage…")
+            page.goto("https://www.corepoweryoga.com/", timeout=60000)
 
-            _log("✅ Reached end of script without errors")
+            # Handle potential popups or cookie banners
+            try:
+                page.locator("button:has-text('Close')").first.click(timeout=3000)
+            except Exception:
+                pass
+            try:
+                page.locator("button[aria-label*='close' i]").click(timeout=3000)
+            except Exception:
+                pass
+
+            # ------------------------------------------------------------------
+            # 2. Login flow
+            # ------------------------------------------------------------------
+            _log("🔐 Logging in…")
+            page.locator("button[data-position='profile.1-sign-in']").first.click(timeout=10000)
+            page.wait_for_selector("input[name='email']", timeout=10000)
+            page.fill("input[name='email']", email)
+            page.fill("input[name='password']", password)
+            page.click("button[type='submit']")
+
+            # Wait for profile icon to appear as confirmation
+            page.wait_for_selector("button[data-position='profile.1-logged-in']", timeout=20000)
+            _log("✅ Login successful.")
+
+            # ------------------------------------------------------------------
+            # 3. Navigate to “Book a Class”
+            # ------------------------------------------------------------------
+            _log("📅 Navigating to booking page…")
+            page.get_by_text("Book a Class").click(timeout=15000)
+            page.wait_for_load_state("networkidle")
+
+            # Select the Flatiron studio
+            _log("📍 Selecting Flatiron studio…")
+            page.fill("input[placeholder*='Search']", "Flatiron")
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(2000)
+            page.get_by_text("Flatiron").first.click(timeout=10000)
+
+            # ------------------------------------------------------------------
+            # 4. Pick the target date
+            # ------------------------------------------------------------------
+            _log(f"🗓 Selecting date {target.strftime('%A %b %d')}…")
+            day_str = str(target.day)
+            date_locator = f"button:has-text('{day_str}')"
+            page.locator(date_locator).first.click(timeout=5000)
+            page.wait_for_timeout(2000)
+
+            # ------------------------------------------------------------------
+            # 5. Find 6:15 PM Yoga Sculpt class
+            # ------------------------------------------------------------------
+            _log("💪 Searching for 6:15 PM Yoga Sculpt class…")
+            classes = page.locator("div.class-card")
+            found = False
+            for i in range(classes.count()):
+                card = classes.nth(i)
+                text = card.inner_text().lower()
+                if "yoga sculpt" in text and "6:15" in text:
+                    card.scroll_into_view_if_needed()
+                    card.get_by_text("Book").first.click(timeout=5000)
+                    found = True
+                    _log("✅ Found target class, attempting to book…")
+                    break
+
+            if not found:
+                _log("⚠️ No matching class found (Yoga Sculpt 6:15 PM). Exiting gracefully.")
+                return
+
+            # ------------------------------------------------------------------
+            # 6. Confirm booking
+            # ------------------------------------------------------------------
+            try:
+                page.get_by_text("Reserve My Spot").first.click(timeout=10000)
+                page.wait_for_timeout(3000)
+                _log("✅ Booking completed successfully.")
+            except Exception:
+                _log("⚠️ Could not click 'Reserve My Spot' — possibly already booked or on waitlist.")
+            
+            _log("🎉 ALONI booking flow finished without fatal errors.")
 
         except PWTimeoutError as e:
-            _log(f"❌ Playwright timeout waiting for an element: {e}")
+            _log(f"❌ Playwright timeout: {e}")
             raise
         except Exception as e:
             _log(f"❌ Unhandled exception: {e}")
             raise
         finally:
-            # Always produce a trace for CI artifact upload
             try:
                 context.tracing.stop(path="trace.zip")
             except Exception:
@@ -91,11 +163,14 @@ def main() -> None:
                 pass
 
 
+# ----------------------------------------------------------------------
+#  Entry point
+# ----------------------------------------------------------------------
+
 if __name__ == "__main__":
-    print("🧘 Starting ALONI automation...")
+    print("🧘 Starting ALONI automation…")
     try:
         main()
     except Exception as exc:
-        # Non-zero exit so GitHub marks job as failed
         print(f"##[error]{exc}")
         sys.exit(1)
