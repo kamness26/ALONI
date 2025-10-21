@@ -9,34 +9,37 @@ jobs:
   run-aloni:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      COREPOWER_EMAIL: ${{ secrets.COREPOWER_EMAIL }}
+      COREPOWER_PASSWORD: ${{ secrets.COREPOWER_PASSWORD }}
+      CI: "true"
 
     steps:
-      - name: Checkout repository
+      - name: 🧘 Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          playwright install --with-deps
+          python -m playwright install --with-deps chromium
 
-      - name: Run ALONI booking script
-        env:
-          COREPOWER_EMAIL: ${{ secrets.COREPOWER_EMAIL }}
-          COREPOWER_PASSWORD: ${{ secrets.COREPOWER_PASSWORD }}
+      - name: 🚀 Run ALONI booking script
         run: |
           echo "🧘 Starting ALONI automation..."
           python scripts/book_class_mvp_v3_1.py
 
-      - name: Upload screenshot if failure
+      - name: 📸 Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: aloni-screenshots
-          path: error_screenshot.png
-
+          name: playwright-artifacts
+          path: |
+            trace.zip
+            videos/
+            screenshots/
