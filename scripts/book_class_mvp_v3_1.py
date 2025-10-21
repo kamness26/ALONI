@@ -1,5 +1,5 @@
 # scripts/book_class_mvp_v3_1.py
-# ALONI 2.9.3 — Production-ready CI-compatible build
+# ALONI 2.9.4 — Full production version with robust login
 
 import os
 import sys
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
 # ----------------------------------------------------------------------
-#  Utility functions
+# Utility helpers
 # ----------------------------------------------------------------------
 
 def _ci() -> bool:
@@ -29,7 +29,7 @@ def _target_date(days_ahead: int = 13):
     return datetime.now().date() + timedelta(days=days_ahead)
 
 # ----------------------------------------------------------------------
-#  Core logic
+# Core automation
 # ----------------------------------------------------------------------
 
 def main() -> None:
@@ -38,7 +38,7 @@ def main() -> None:
 
     target = _target_date(13)
     weekday = target.strftime("%A")
-    _log("🚀 Starting ALONI 2.9.3 – Verified Booking Flow…")
+    _log("🚀 Starting ALONI 2.9.4 – Verified Booking Flow…")
     _log(f"📅 Target date: {weekday}, {target.strftime('%b %d')} (13 days from today)")
 
     # Only book on Mon/Tue/Wed
@@ -63,27 +63,72 @@ def main() -> None:
             _log("🏠 Opening CorePower homepage…")
             page.goto("https://www.corepoweryoga.com/", timeout=60000)
 
-            # Handle potential popups or cookie banners
-            try:
-                page.locator("button:has-text('Close')").first.click(timeout=3000)
-            except Exception:
-                pass
-            try:
-                page.locator("button[aria-label*='close' i]").click(timeout=3000)
-            except Exception:
-                pass
+            # Close any popups or cookie banners
+            for close_sel in [
+                "button:has-text('Close')",
+                "button[aria-label*='close' i]",
+                "button:has-text('Accept')",
+                "button:has-text('Got it')",
+            ]:
+                try:
+                    page.locator(close_sel).first.click(timeout=3000)
+                except Exception:
+                    pass
 
             # ------------------------------------------------------------------
-            # 2. Login flow
+            # 2. Login flow (robust headless-safe version)
             # ------------------------------------------------------------------
             _log("🔐 Logging in…")
-            page.locator("button[data-position='profile.1-sign-in']").first.click(timeout=10000)
+
+            page.wait_for_selector("button[data-position*='profile']", timeout=15000)
+            page.evaluate("window.scrollTo(0, 0)")
+            page.wait_for_timeout(1000)
+
+            login_selectors = [
+                "button[data-position='profile.1-sign-in']",
+                "button:has-text('Sign in')",
+                "text=Sign in",
+            ]
+
+            clicked = False
+            for sel in login_selectors:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.is_visible():
+                        btn.click(timeout=5000)
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+
+            if not clicked:
+                _log("⚠️ Could not find visible Sign In button, retrying after closing popups…")
+                for close_sel in ["button:has-text('Close')", "button[aria-label*='close' i]"]:
+                    try:
+                        page.locator(close_sel).first.click(timeout=2000)
+                    except Exception:
+                        pass
+                page.wait_for_timeout(2000)
+                for sel in login_selectors:
+                    try:
+                        btn = page.locator(sel).first
+                        if btn.is_visible():
+                            btn.click(timeout=5000)
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+
+            if not clicked:
+                raise PWTimeoutError("Could not find or click the Sign In button.")
+
+            # Fill credentials
             page.wait_for_selector("input[name='email']", timeout=10000)
             page.fill("input[name='email']", email)
             page.fill("input[name='password']", password)
             page.click("button[type='submit']")
 
-            # Wait for profile icon to appear as confirmation
+            # Wait for profile icon confirmation
             page.wait_for_selector("button[data-position='profile.1-logged-in']", timeout=20000)
             _log("✅ Login successful.")
 
@@ -116,7 +161,8 @@ def main() -> None:
             _log("💪 Searching for 6:15 PM Yoga Sculpt class…")
             classes = page.locator("div.class-card")
             found = False
-            for i in range(classes.count()):
+            count = classes.count()
+            for i in range(count):
                 card = classes.nth(i)
                 text = card.inner_text().lower()
                 if "yoga sculpt" in text and "6:15" in text:
@@ -139,7 +185,7 @@ def main() -> None:
                 _log("✅ Booking completed successfully.")
             except Exception:
                 _log("⚠️ Could not click 'Reserve My Spot' — possibly already booked or on waitlist.")
-            
+
             _log("🎉 ALONI booking flow finished without fatal errors.")
 
         except PWTimeoutError as e:
@@ -162,9 +208,8 @@ def main() -> None:
             except Exception:
                 pass
 
-
 # ----------------------------------------------------------------------
-#  Entry point
+# Entry point
 # ----------------------------------------------------------------------
 
 if __name__ == "__main__":
