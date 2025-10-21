@@ -8,7 +8,7 @@ on:
 jobs:
   run-aloni:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
       COREPOWER_EMAIL: ${{ secrets.COREPOWER_EMAIL }}
       COREPOWER_PASSWORD: ${{ secrets.COREPOWER_PASSWORD }}
@@ -21,7 +21,7 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
       - name: 📦 Install dependencies
         run: |
@@ -29,13 +29,16 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
-      - name: 🚀 Run ALONI booking script
+      # Run under a virtual X server so the site fully hydrates & renders buttons
+      - name: 🚀 Run ALONI booking script (with xvfb)
         run: |
           echo "🧘 Starting ALONI automation..."
-          python scripts/book_class_mvp_v3_1.py
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' \
+            python scripts/book_class_mvp_v3_1.py
 
-      - name: 📸 Upload artifacts on failure
-        if: failure()
+      # Always upload artifacts so we can see what CI saw (trace/video/screens)
+      - name: 📸 Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-artifacts
