@@ -96,3 +96,72 @@ def main():
             day_num = str(target_date.day)
             day_locator = page.locator(f"div.cal-date:has-text('{day_num}')").last
             day_locator.scroll_into_view_if_needed()
+            day_locator.click()
+            print(f"✅ Clicked calendar date {day_num} ({target_date.strftime('%a')}).")
+        except Exception as e:
+            print(f"⚠️ Could not select date {target_date.strftime('%a %b %d')}: {e}")
+
+        time.sleep(4)
+
+        # 9️⃣ Scroll within schedule to find 6:15 pm Flatiron
+        print("💫 Scrolling through class list to find 6:15 pm Flatiron...")
+
+        try:
+            found = False
+            scroll_attempts = 0
+            max_scrolls = 15
+
+            schedule_container = page.locator("div.schedule-container, div.schedule-page, div.class-list").first
+
+            while not found and scroll_attempts < max_scrolls:
+                rows = schedule_container.locator("div.session-row-view")
+                row_count = rows.count()
+                print(f"🔍 Found {row_count} session rows (scroll {scroll_attempts + 1}/{max_scrolls})")
+
+                match = schedule_container.locator(
+                    "div.session-row-view:has(div.session-card_sessionTime__hNAfR:has-text('6:15 pm')):has(div.session-card_sessionStudio__yRE6h:has-text('Flatiron'))"
+                )
+
+                if match.count() > 0:
+                    print("✅ Found target row for 6:15 pm Flatiron.")
+                    target = match.first
+                    target.scroll_into_view_if_needed()
+                    page.wait_for_timeout(1000)
+
+                    book_button = target.locator("div.btn-text:has-text('BOOK')")
+                    if book_button.count() > 0 and book_button.first.is_visible():
+                        book_button.first.click()
+                        print("🧘 Clicked BOOK button successfully.")
+                    else:
+                        print("⚠️ BOOK button not visible or already booked.")
+
+                    found = True
+                else:
+                    page.mouse.wheel(0, 1200)
+                    page.wait_for_timeout(1000)
+                    scroll_attempts += 1
+
+            if not found:
+                print("⚠️ Could not find 6:15 pm Flatiron class after scrolling.")
+
+        except Exception as e:
+            print(f"⚠️ Booking section error: {e}")
+
+        # 🔟 Confirm booking
+        page.wait_for_timeout(3000)
+        try:
+            if page.locator("button:has-text(\"I'm done\")").is_visible():
+                print("🎉 Booking confirmed — popup detected.")
+                page.locator("button:has-text(\"I'm done\")").click()
+                print("💨 Closed confirmation popup.")
+            else:
+                print("⚠️ Booking click registered but no confirmation popup found.")
+        except Exception as e:
+            print(f"⚠️ Confirmation check error: {e}")
+
+        print("🏁 Booking flow complete.")
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()
