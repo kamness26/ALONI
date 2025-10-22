@@ -1,132 +1,82 @@
-import os, time
-from datetime import datetime, timedelta
-from playwright.sync_api import sync_playwright
+# scripts/book_class_mvp_v3_2.py
+import os, datetime, time
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-def main():
-    print("🚀 Starting ALONI 2.9.14 – Restored Reliable Flow")
-
-    email = os.getenv("COREPOWER_EMAIL")
-    password = os.getenv("COREPOWER_PASSWORD")
-
-    target_date = datetime.now() + timedelta(days=13)
-    weekday = target_date.strftime("%A")
-    if weekday not in ["Monday", "Tuesday", "Wednesday"]:
-        print(f"⏸ Skipping — {weekday}")
-        return
-
-    print(f"📅 Target: {weekday}, {target_date:%b %d}")
+def book_class():
+    target_date = (datetime.date.today() + datetime.timedelta(days=13))
+    target_day = target_date.day
+    target_str = target_date.strftime("%A, %b %d")
+    print(f"🚀 Starting ALONI 2.9.15 – Scroll & Sync Fix")
+    print(f"📅 Target date: {target_str}")
 
     with sync_playwright() as p:
-        headless = os.getenv("CI", "").lower() == "true"
-        browser = p.chromium.launch(headless=headless, slow_mo=75)
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context()
         page = context.new_page()
 
+        # Open homepage
         print("🏠 Opening homepage…")
-        page.goto("https://www.corepoweryoga.com/", timeout=60000)
+        page.goto("https://www.corepoweryoga.com", wait_until="load")
 
-        for sel in [
-            "button:has-text('Close')",
-            "button[aria-label*='close' i]",
-            "div[role='dialog'] button:has-text('×')",
-        ]:
-            try:
-                if page.is_visible(sel):
-                    page.click(sel)
-                    print(f"💨 Closed popup {sel}")
-                    time.sleep(1)
-            except:
-                pass
+        # Click profile icon
+        page.locator("button[aria-label*='profile' i]").click()
+        print("✅ Clicked profile icon.")
 
-        # Click profile icon first
+        # Wait for dropdown to expand (explicitly)
         try:
-            icon = page.locator("img[alt='Profile Icon']").first
-            page.evaluate("(el)=>el.click()", icon.element_handle())
-            print("✅ Clicked profile icon.")
-        except Exception as e:
-            print(f"⚠️ Profile icon issue: {e}")
+            page.wait_for_selector("button[data-position='profile.1-sign-in']", state="visible", timeout=5000)
+        except PlaywrightTimeout:
+            print("⚠️ Sign In still hidden — forcing second click and recheck")
+            page.locator("button[aria-label*='profile' i]").click()
+            page.wait_for_timeout(1000)
 
-        # Then click Sign In
+        # Click Sign In
+        page.locator("button[data-position='profile.1-sign-in']").click()
+        print("✅ Clicked 'Sign In'.")
+
+        # Fill credentials
+        page.wait_for_selector("input[name='username']", timeout=10000)
+        page.fill("input[name='username']", os.getenv("COREPOWER_EMAIL"))
+        page.fill("input[name='password']", os.getenv("COREPOWER_PASSWORD"))
+        page.click("button:has-text('Sign In')")
+        print("✅ Submitted credentials.")
+
+        # Post-login popup
         try:
-            sign_in = page.locator("button[data-position='profile.1-sign-in']").first
-            sign_in.wait_for(state="visible", timeout=8000)
-            sign_in.click()
-            print("✅ Clicked Sign In.")
-        except Exception as e:
-            print(f"⚠️ Sign In not visible: {e}")
-
-        # Fill login form
-        try:
-            page.fill("input[name='username']", email)
-            page.fill("input[name='password']", password)
-            page.keyboard.press("Enter")
-            print("✅ Submitted credentials.")
-        except Exception as e:
-            print(f"⚠️ Could not fill creds: {e}")
-
-        time.sleep(5)
-
-        # Close post-login popups
-        for sel in [
-            "button:has-text('Close')",
-            "button[aria-label*='close' i]",
-            "div[role='dialog'] button:has-text('×')",
-        ]:
-            try:
-                if page.is_visible(sel):
-                    page.click(sel)
-                    print(f"💨 Closed post-login popup {sel}")
-                    time.sleep(1)
-            except:
-                pass
+            page.locator("button:has-text('Close')").first.click(timeout=3000)
+            print("💨 Closed post-login popup.")
+        except:
+            pass
 
         # Book a class
+        page.get_by_role("button", name="Book a class").click()
+        print("✅ Clicked 'Book a class'.")
+
+        # Click the date
+        date_button = page.locator(f"//button[normalize-space(text())='{target_day}']")
+        date_button.scroll_into_view_if_needed()
+        date_button.click()
+        print(f"✅ Clicked calendar date {target_day}.")
+
+        # NEW: actively scroll class list to bottom
+        print("💫 Scrolling class list to find Flatiron 6:15 PM...")
+        for _ in range(12):
+            page.mouse.wheel(0, 500)
+            time.sleep(0.4)
+            if page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").count() > 0:
+                break
+
         try:
-            btn = page.locator("button[data-position='book-a-class']").last
-            btn.wait_for(state="visible", timeout=10000)
-            btn.click()
-            print("✅ Clicked 'Book a class'.")
-        except Exception as e:
-            print(f"⚠️ Booking button issue: {e}")
+            session = page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").last
+            session.scroll_into_view_if_needed()
+            session.click()
+            print("✅ Clicked Flatiron 6:15 PM session.")
+        except PlaywrightTimeout:
+            print("⚠️ Could not find or click the class.")
 
-        page.wait_for_timeout(5000)
-
-        # Select calendar date
-        try:
-            d = str(target_date.day)
-            cal = page.locator(f"div.cal-date:has-text('{d}')").last
-            cal.scroll_into_view_if_needed()
-            cal.click()
-            print(f"✅ Clicked calendar date {d}.")
-        except Exception as e:
-            print(f"⚠️ Date select fail: {e}")
-
-        time.sleep(5)
-
-        # Find & book class
-        try:
-            row = page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").last
-            row.scroll_into_view_if_needed()
-            print("✅ Found target class.")
-            book = row.locator("div.btn-text:has-text('BOOK')").last
-            book.wait_for(state="visible", timeout=10000)
-            if book.is_enabled():
-                book.click()
-                print("✅ Clicked BOOK.")
-            else:
-                time.sleep(2)
-                book.click(force=True)
-                print("⚠️ Forced BOOK click.")
-
-            time.sleep(3)
-            if page.locator("button:has-text(\"I'm done\")").is_visible():
-                print("🎉 Booking confirmed.")
-                page.locator("button:has-text(\"I'm done\")").click()
-        except Exception as e:
-            print(f"⚠️ Booking flow failed: {e}")
-
-        print("🏁 Done.")
+        print("🏁 Booking flow complete.")
+        context.close()
         browser.close()
 
 if __name__ == "__main__":
-    main()
+    book_class()
