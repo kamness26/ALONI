@@ -1,139 +1,132 @@
 import os, time
 from datetime import datetime, timedelta
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-
-COREPOWER_URL = "https://www.corepoweryoga.com/"
-EMAIL = os.getenv("COREPOWER_EMAIL")
-PASSWORD = os.getenv("COREPOWER_PASSWORD")
-TARGET_CLASS = "6:15 pm"
-TARGET_LOCATION = "Flatiron"
+from playwright.sync_api import sync_playwright
 
 def main():
+    print("🚀 Starting ALONI 2.9.14 – Restored Reliable Flow")
+
+    email = os.getenv("COREPOWER_EMAIL")
+    password = os.getenv("COREPOWER_PASSWORD")
+
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
     if weekday not in ["Monday", "Tuesday", "Wednesday"]:
-        print(f"⏸  {target_date:%A %b %d} not a booking day.")
+        print(f"⏸ Skipping — {weekday}")
         return
 
-    print(f"🚀  Starting ALONI 2.9.13 – Full Login → Scroll → Book Flow")
-    print(f"📅  Target date: {weekday}, {target_date:%b %d}")
+    print(f"📅 Target: {weekday}, {target_date:%b %d}")
 
     with sync_playwright() as p:
         headless = os.getenv("CI", "").lower() == "true"
-        browser = p.chromium.launch(headless=headless)
+        browser = p.chromium.launch(headless=headless, slow_mo=75)
         context = browser.new_context()
         page = context.new_page()
 
-        # — HOME —
-        print("🏠  Opening homepage…")
-        page.goto(COREPOWER_URL, timeout=60000)
+        print("🏠 Opening homepage…")
+        page.goto("https://www.corepoweryoga.com/", timeout=60000)
 
-        # Close pop-ups
         for sel in [
             "button:has-text('Close')",
             "button[aria-label*='close' i]",
             "div[role='dialog'] button:has-text('×')",
         ]:
             try:
-                page.locator(sel).first.click(timeout=3000)
-                print(f"💨  Closed popup via {sel}")
-            except Exception:
+                if page.is_visible(sel):
+                    page.click(sel)
+                    print(f"💨 Closed popup {sel}")
+                    time.sleep(1)
+            except:
                 pass
 
-        # — PROFILE ICON → SIGN IN —
+        # Click profile icon first
         try:
-            profile_icon = page.locator("img[alt='Profile Icon']").first
-            profile_icon.wait_for(state="visible", timeout=10000)
-            page.evaluate("(el)=>el.click()", profile_icon.element_handle())
-            print("✅  Clicked Profile Icon.")
+            icon = page.locator("img[alt='Profile Icon']").first
+            page.evaluate("(el)=>el.click()", icon.element_handle())
+            print("✅ Clicked profile icon.")
         except Exception as e:
-            print(f"⚠️ Profile icon click failed: {e}")
+            print(f"⚠️ Profile icon issue: {e}")
 
+        # Then click Sign In
         try:
             sign_in = page.locator("button[data-position='profile.1-sign-in']").first
             sign_in.wait_for(state="visible", timeout=8000)
             sign_in.click()
-            print("✅ Clicked Sign In button.")
+            print("✅ Clicked Sign In.")
         except Exception as e:
-            print(f"⚠️ Sign In button not visible: {e}")
+            print(f"⚠️ Sign In not visible: {e}")
 
-        # — LOGIN FORM —
+        # Fill login form
         try:
-            page.fill("input[name='username'], input[name='email']", EMAIL)
-            page.fill("input[name='password']", PASSWORD)
+            page.fill("input[name='username']", email)
+            page.fill("input[name='password']", password)
             page.keyboard.press("Enter")
             print("✅ Submitted credentials.")
         except Exception as e:
-            print(f"⚠️ Credential entry failed: {e}")
+            print(f"⚠️ Could not fill creds: {e}")
 
-        page.wait_for_timeout(5000)
+        time.sleep(5)
 
-        # — POST-LOGIN POPUPS —
+        # Close post-login popups
         for sel in [
             "button:has-text('Close')",
             "button[aria-label*='close' i]",
             "div[role='dialog'] button:has-text('×')",
         ]:
             try:
-                page.locator(sel).first.click(timeout=3000)
-                print(f"💨 Closed post-login popup via {sel}")
-            except Exception:
+                if page.is_visible(sel):
+                    page.click(sel)
+                    print(f"💨 Closed post-login popup {sel}")
+                    time.sleep(1)
+            except:
                 pass
 
-        # — BOOK A CLASS —
+        # Book a class
         try:
-            book_btn = page.locator("button[data-position='book-a-class']").last
-            book_btn.wait_for(state="visible", timeout=10000)
-            book_btn.click()
+            btn = page.locator("button[data-position='book-a-class']").last
+            btn.wait_for(state="visible", timeout=10000)
+            btn.click()
             print("✅ Clicked 'Book a class'.")
         except Exception as e:
-            print(f"⚠️ Could not click Book a class: {e}")
+            print(f"⚠️ Booking button issue: {e}")
 
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(5000)
 
-        # — SELECT DATE (top-left calendar) —
-        day_num = str(target_date.day)
+        # Select calendar date
         try:
-            cal = page.locator(f"div.cal-date:has-text('{day_num}')").last
+            d = str(target_date.day)
+            cal = page.locator(f"div.cal-date:has-text('{d}')").last
             cal.scroll_into_view_if_needed()
             cal.click()
-            print(f"✅ Clicked calendar date {day_num} ({weekday}).")
+            print(f"✅ Clicked calendar date {d}.")
         except Exception as e:
-            print(f"⚠️ Calendar click failed: {e}")
+            print(f"⚠️ Date select fail: {e}")
 
-        # — SCROLL AND BOOK CLASS —
-        print("🔍 Searching for target class…")
-        target = None
-        for _ in range(20):
-            rows = page.locator("div.session-row-view")
-            for i in range(rows.count()):
-                try:
-                    txt = rows.nth(i).inner_text(timeout=2000)
-                    if TARGET_CLASS in txt and TARGET_LOCATION in txt:
-                        target = rows.nth(i)
-                        break
-                except Exception:
-                    continue
-            if target:
-                break
-            page.mouse.wheel(0, 1000)
-            time.sleep(0.4)
+        time.sleep(5)
 
-        if target:
-            target.scroll_into_view_if_needed()
-            btn = target.locator("div.btn-text:has-text('BOOK')").last
-            try:
-                btn.click(timeout=5000)
-                print(f"✅ Booked {TARGET_CLASS} at {TARGET_LOCATION}.")
-            except Exception as e:
-                print(f"⚠️ BOOK button click failed: {e}")
-        else:
-            print(f"⚠️ No {TARGET_CLASS} at {TARGET_LOCATION} found.")
+        # Find & book class
+        try:
+            row = page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").last
+            row.scroll_into_view_if_needed()
+            print("✅ Found target class.")
+            book = row.locator("div.btn-text:has-text('BOOK')").last
+            book.wait_for(state="visible", timeout=10000)
+            if book.is_enabled():
+                book.click()
+                print("✅ Clicked BOOK.")
+            else:
+                time.sleep(2)
+                book.click(force=True)
+                print("⚠️ Forced BOOK click.")
 
-        print("🏁 Flow complete.")
-        context.close()
+            time.sleep(3)
+            if page.locator("button:has-text(\"I'm done\")").is_visible():
+                print("🎉 Booking confirmed.")
+                page.locator("button:has-text(\"I'm done\")").click()
+        except Exception as e:
+            print(f"⚠️ Booking flow failed: {e}")
+
+        print("🏁 Done.")
         browser.close()
-
 
 if __name__ == "__main__":
     main()
