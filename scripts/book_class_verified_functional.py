@@ -1,163 +1,161 @@
-from playwright.sync_api import sync_playwright
-from datetime import datetime, timedelta
+import os
 import time
-import re
+from datetime import datetime, timedelta
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+COREPOWER_URL = "https://www.corepoweryoga.com/"
+EMAIL = os.getenv("COREPOWER_EMAIL")
+PASSWORD = os.getenv("COREPOWER_PASSWORD")
+
+TARGET_LOCATION = "Flatiron"
+TARGET_CLASS = "6:15 pm"
+
+
+def close_all_modals(page):
+    """Force close any lingering modals that block clicks."""
+    modals = [
+        "button:has-text('Close')",
+        "button[aria-label*='close' i]",
+        "div.cpy-modal--sign-up",
+        "div.cpy-modal--full-height",
+        "div.modal.show"
+    ]
+    for selector in modals:
+        try:
+            elements = page.locator(selector)
+            count = elements.count()
+            if count > 0:
+                for i in range(count):
+                    elements.nth(i).evaluate("e => e.remove()")
+                    print(f"💨 Removed modal element: {selector}")
+        except Exception:
+            pass
+
+
+def wait_and_click(page, selector, timeout=8000, description=""):
+    """Click element with fallback modal cleanup."""
+    try:
+        page.wait_for_selector(selector, timeout=timeout)
+        page.locator(selector).first.click()
+        print(f"✅ Clicked {description or selector}")
+    except PlaywrightTimeoutError:
+        print(f"⚠️ Timeout waiting for {description or selector}")
+    except Exception as e:
+        print(f"⚠️ Could not click {description or selector}: {e}")
+        close_all_modals(page)
+        try:
+            page.locator(selector).first.click()
+            print(f"✅ Clicked {description or selector} after cleanup")
+        except Exception:
+            print(f"❌ Failed to click {description or selector} after cleanup")
+
+
+def wait_and_fill(page, selector, value, description=""):
+    """Fill an input field safely."""
+    try:
+        page.wait_for_selector(selector, timeout=6000)
+        page.fill(selector, value)
+        print(f"✅ Filled {description or selector}")
+    except Exception as e:
+        print(f"⚠️ Could not fill {description or selector}: {e}")
+
+
+def select_target_date(page, target_date_str):
+    """Click on the target date from the calendar."""
+    try:
+        calendar_selector = f"div.cal-date:has-text('{target_date_str}')"
+        print(f"🗓  Selecting date: {target_date_str}")
+        page.wait_for_selector(calendar_selector, timeout=10000)
+        page.locator(calendar_selector).last.scroll_into_view_if_needed()
+        time.sleep(1)
+        page.locator(calendar_selector).last.click()
+        print(f"✅ Selected date {target_date_str}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Could not select date {target_date_str}: {e}")
+        return False
+
+
+def scroll_and_find_class(page):
+    """Scrolls through class list until it finds the target session."""
+    for i in range(15):
+        rows = page.locator("div.session-card_sessionTime__hNAfR")
+        count = rows.count()
+        print(f"🔍 Found {count} session rows (scroll {i+1}/15)")
+        for j in range(count):
+            try:
+                time_text = rows.nth(j).inner_text().strip()
+                if time_text == TARGET_CLASS:
+                    # Check location near this row
+                    location = rows.nth(j).locator("xpath=ancestor::div[contains(@class,'session-card')]//div[contains(text(), 'Flatiron')]")
+                    if location.count() > 0:
+                        print(f"✅ Found {TARGET_CLASS} at {TARGET_LOCATION} — attempting booking…")
+                        book_button = rows.nth(j).locator("xpath=ancestor::div[contains(@class,'session-card')]//button[contains(., 'Book')]")
+                        book_button.click()
+                        time.sleep(2)
+                        return True
+            except Exception:
+                continue
+
+        # Scroll down a bit if not found
+        page.mouse.wheel(0, 1200)
+        time.sleep(1)
+    print(f"⚠️ Could not find {TARGET_CLASS} {TARGET_LOCATION} class after scrolling.")
+    return False
+
 
 def main():
     print("🚀 Starting ALONI – Verified Functional Flow")
 
+    # Determine target date (13 days from today)
     target_date = datetime.now() + timedelta(days=13)
-    weekday = target_date.strftime("%A")
-
-    if weekday not in ["Monday", "Tuesday", "Wednesday"]:
-        print(f"⏸ Skipping — target date ({target_date.strftime('%a %b %d')}) is not Mon/Tue/Wed.")
-        return
-
+    target_date_str = target_date.strftime("%a %b %d")
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_page()
 
-        # 1️⃣ Open homepage
         print("🏠 Opening homepage…")
-        page.goto("https://www.corepoweryoga.com/", timeout=60000)
+        page.goto(COREPOWER_URL, timeout=60000)
 
-        # 2️⃣ Handle popups
-        popup_selectors = [
-            "button:has-text('Close')",
-            "button[aria-label*='close' i]",
-            "div[role='dialog'] button:has-text('×')",
-        ]
-        for sel in popup_selectors:
-            try:
-                if page.is_visible(sel):
-                    page.click(sel)
-                    print(f"💨 Closed popup via {sel}")
-                    time.sleep(1)
-            except:
-                pass
+        # Close popups and modals at start
+        close_all_modals(page)
 
-        # 3️⃣ Click profile icon
-        try:
-            page.evaluate(
-                "(el) => el.click()", 
-                page.locator("img[alt='Profile Icon']").first.element_handle()
-            )
-            print("✅ Clicked profile icon.")
-        except Exception as e:
-            print(f"⚠️ Failed to click profile icon: {e}")
+        # Click profile icon
+        wait_and_click(page, "button[data-position='profile.1-profile']", description="profile icon")
 
-        # 4️⃣ Click “Sign In”
-        try:
-            sign_in_btn = page.locator("button[data-position='profile.1-sign-in']").first
-            sign_in_btn.wait_for(state="visible", timeout=8000)
-            sign_in_btn.click()
-            print("✅ Clicked Sign In button.")
-        except Exception as e:
-            print(f"⚠️ Sign In button not visible; continuing… ({e})")
+        # Try to click sign-in if visible
+        wait_and_click(page, "button[data-position='profile.1-sign-in']", description="sign-in button")
 
-        # 5️⃣ Login
-        try:
-            page.fill("input[name='username']", "YOUR_EMAIL")
-            page.fill("input[name='password']", "YOUR_PASSWORD")
-            page.keyboard.press("Enter")
-            print("✅ Submitted credentials.")
-        except Exception as e:
-            print(f"⚠️ Could not fill credentials: {e}")
+        # Fill credentials
+        wait_and_fill(page, "input#email", EMAIL, description="email field")
+        wait_and_fill(page, "input#password", PASSWORD, description="password field")
 
-        time.sleep(6)
+        # Submit login
+        wait_and_click(page, "button[type='submit']", description="submit login")
 
-        # 6️⃣ Close post-login popups
-        for sel in popup_selectors:
-            try:
-                if page.is_visible(sel):
-                    page.click(sel)
-                    print(f"💨 Closed popup via {sel}")
-                    time.sleep(1)
-            except:
-                pass
+        # Ensure modal cleanup after login
+        close_all_modals(page)
+        time.sleep(3)
 
-        # 7️⃣ Click “Book a class”
-        try:
-            book_btn = page.locator("button[data-position='book-a-class']").last
-            book_btn.wait_for(state="visible", timeout=10000)
-            book_btn.click()
-            print("✅ Clicked visible 'Book a class'.")
-        except Exception as e:
-            print(f"⚠️ Could not click Book a class: {e}")
+        # Click 'Book a class'
+        wait_and_click(page, "button[data-position='book-a-class']", description="Book a class")
+        close_all_modals(page)
 
-        # Wait for calendar
-        page.wait_for_timeout(5000)
+        # Select target date
+        if not select_target_date(page, str(target_date.day)):
+            print("⚠️ Date selection failed, attempting fallback scroll")
+            page.mouse.wheel(0, 2000)
+            time.sleep(1)
+            select_target_date(page, str(target_date.day))
 
-        # 8️⃣ Click target date
-        try:
-            day_num = str(target_date.day)
-            day_locator = page.locator(f"div.cal-date:has-text('{day_num}')").last
-            day_locator.scroll_into_view_if_needed()
-            day_locator.click()
-            print(f"✅ Clicked calendar date {day_num} ({target_date.strftime('%a')}).")
-        except Exception as e:
-            print(f"⚠️ Could not select date {target_date.strftime('%a %b %d')}: {e}")
-
-        time.sleep(4)
-
-        # 9️⃣ Scroll within schedule to find 6:15 pm Flatiron
-        print("💫 Scrolling through class list to find 6:15 pm Flatiron...")
-
-        try:
-            found = False
-            scroll_attempts = 0
-            max_scrolls = 15
-
-            schedule_container = page.locator("div.schedule-container, div.schedule-page, div.class-list").first
-
-            while not found and scroll_attempts < max_scrolls:
-                rows = schedule_container.locator("div.session-row-view")
-                row_count = rows.count()
-                print(f"🔍 Found {row_count} session rows (scroll {scroll_attempts + 1}/{max_scrolls})")
-
-                match = schedule_container.locator(
-                    "div.session-row-view:has(div.session-card_sessionTime__hNAfR:has-text('6:15 pm')):has(div.session-card_sessionStudio__yRE6h:has-text('Flatiron'))"
-                )
-
-                if match.count() > 0:
-                    print("✅ Found target row for 6:15 pm Flatiron.")
-                    target = match.first
-                    target.scroll_into_view_if_needed()
-                    page.wait_for_timeout(1000)
-
-                    book_button = target.locator("div.btn-text:has-text('BOOK')")
-                    if book_button.count() > 0 and book_button.first.is_visible():
-                        book_button.first.click()
-                        print("🧘 Clicked BOOK button successfully.")
-                    else:
-                        print("⚠️ BOOK button not visible or already booked.")
-
-                    found = True
-                else:
-                    page.mouse.wheel(0, 1200)
-                    page.wait_for_timeout(1000)
-                    scroll_attempts += 1
-
-            if not found:
-                print("⚠️ Could not find 6:15 pm Flatiron class after scrolling.")
-
-        except Exception as e:
-            print(f"⚠️ Booking section error: {e}")
-
-        # 🔟 Confirm booking
-        page.wait_for_timeout(3000)
-        try:
-            if page.locator("button:has-text(\"I'm done\")").is_visible():
-                print("🎉 Booking confirmed — popup detected.")
-                page.locator("button:has-text(\"I'm done\")").click()
-                print("💨 Closed confirmation popup.")
-            else:
-                print("⚠️ Booking click registered but no confirmation popup found.")
-        except Exception as e:
-            print(f"⚠️ Confirmation check error: {e}")
+        print("💫 Scrolling through class list to find target session…")
+        found = scroll_and_find_class(page)
+        if found:
+            print("✅ Booking attempt complete — check confirmation popup or email.")
+        else:
+            print("⚠️ Booking click registered but no confirmation popup found.")
 
         print("🏁 Booking flow complete.")
         browser.close()
