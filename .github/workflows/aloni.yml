@@ -34,7 +34,7 @@ jobs:
         run: |
           echo "🧘 Starting ALONI automation..."
           xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24' \
-            python scripts/book_class_mvp_v3_1.py
+            python scripts/book_class_verified_functional.py
 
       # Always upload artifacts so we can see what CI saw (trace/video/screens)
       - name: 📸 Upload artifacts
