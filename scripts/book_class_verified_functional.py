@@ -60,6 +60,17 @@ def wait_and_fill(page, selector, value, description=""):
         print(f"⚠️ Could not fill {description or selector}: {e}")
 
 
+def verify_login(page):
+    """Return True if we detect a logged-in state (Account menu visible)."""
+    try:
+        if page.locator("button[data-position='profile.1-sign-out']").count() > 0:
+            print("🟢 Login verified — user is signed in.")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def select_target_date(page, target_date_str):
     """Click on the target date from the booking calendar."""
     try:
@@ -78,10 +89,10 @@ def select_target_date(page, target_date_str):
 
 def scroll_and_find_class(page):
     """Scrolls down the class list to find the target session."""
-    for i in range(15):
+    for i in range(17):
         rows = page.locator("div.session-card_sessionTime__hNAfR")
         count = rows.count()
-        print(f"🔍 Found {count} session rows (scroll {i+1}/15)")
+        print(f"🔍 Found {count} session rows (scroll {i+1}/17)")
         for j in range(count):
             try:
                 time_text = rows.nth(j).inner_text().strip()
@@ -110,7 +121,7 @@ def main():
     print("🚀 Starting ALONI – Verified Functional Flow")
 
     target_date = datetime.now() + timedelta(days=13)
-    target_date_str = target_date.strftime("%-d")  # day of month without leading zero
+    target_date_str = target_date.strftime("%-d")  # day of month
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
 
     with sync_playwright() as p:
@@ -121,7 +132,8 @@ def main():
         page.goto(COREPOWER_URL, timeout=60000)
         close_all_modals(page)
 
-        # ✅ Login flow (restored from 2.9.2)
+        # === LOGIN PHASE ===
+        print("\n🔐 LOGIN PHASE")
         try:
             page.wait_for_selector("img[alt='Profile Icon']", timeout=10000)
             profile_icon = page.locator("img[alt='Profile Icon']").first
@@ -151,18 +163,22 @@ def main():
         time.sleep(5)
         close_all_modals(page)
 
-        # ✅ Book a class
+        if not verify_login(page):
+            print("❌ Login verification failed — stopping flow early.")
+            browser.close()
+            return
+
+        # === BOOKING PHASE ===
+        print("\n📘 BOOKING PHASE")
         wait_and_click(page, "button[data-position='book-a-class']", description="Book a class")
         close_all_modals(page)
 
-        # ✅ Select target date
         if not select_target_date(page, target_date_str):
             print("⚠️ Date selection failed, attempting fallback scroll")
             page.mouse.wheel(0, 2000)
             time.sleep(1)
             select_target_date(page, target_date_str)
 
-        # ✅ Find and book class
         print("💫 Scrolling through class list to find target session…")
         found = scroll_and_find_class(page)
 
