@@ -12,7 +12,7 @@ TARGET_CLASS = "6:15 pm"
 
 
 def close_all_modals(page):
-    """Force close any lingering modals that block clicks."""
+    """Force close or remove any lingering modals that block interactions."""
     modals = [
         "button:has-text('Close')",
         "button[aria-label*='close' i]",
@@ -33,7 +33,7 @@ def close_all_modals(page):
 
 
 def wait_and_click(page, selector, timeout=8000, description=""):
-    """Click element with fallback modal cleanup."""
+    """Click an element with wait and retry handling."""
     try:
         page.wait_for_selector(selector, timeout=timeout)
         page.locator(selector).first.click()
@@ -51,7 +51,7 @@ def wait_and_click(page, selector, timeout=8000, description=""):
 
 
 def wait_and_fill(page, selector, value, description=""):
-    """Fill an input field safely."""
+    """Safely fill input field."""
     try:
         page.wait_for_selector(selector, timeout=6000)
         page.fill(selector, value)
@@ -61,7 +61,7 @@ def wait_and_fill(page, selector, value, description=""):
 
 
 def select_target_date(page, target_date_str):
-    """Click on the target date from the calendar."""
+    """Click on the target date from the booking calendar."""
     try:
         calendar_selector = f"div.cal-date:has-text('{target_date_str}')"
         print(f"🗓  Selecting date: {target_date_str}")
@@ -77,7 +77,7 @@ def select_target_date(page, target_date_str):
 
 
 def scroll_and_find_class(page):
-    """Scrolls through class list until it finds the target session."""
+    """Scrolls down the class list to find the target session."""
     for i in range(15):
         rows = page.locator("div.session-card_sessionTime__hNAfR")
         count = rows.count()
@@ -86,18 +86,20 @@ def scroll_and_find_class(page):
             try:
                 time_text = rows.nth(j).inner_text().strip()
                 if time_text == TARGET_CLASS:
-                    # Check location near this row
-                    location = rows.nth(j).locator("xpath=ancestor::div[contains(@class,'session-card')]//div[contains(text(), 'Flatiron')]")
+                    # Verify correct location near this time slot
+                    location = rows.nth(j).locator(
+                        "xpath=ancestor::div[contains(@class,'session-card')]//div[contains(text(), 'Flatiron')]"
+                    )
                     if location.count() > 0:
                         print(f"✅ Found {TARGET_CLASS} at {TARGET_LOCATION} — attempting booking…")
-                        book_button = rows.nth(j).locator("xpath=ancestor::div[contains(@class,'session-card')]//button[contains(., 'Book')]")
+                        book_button = rows.nth(j).locator(
+                            "xpath=ancestor::div[contains(@class,'session-card')]//button[contains(., 'Book')]"
+                        )
                         book_button.click()
                         time.sleep(2)
                         return True
             except Exception:
                 continue
-
-        # Scroll down a bit if not found
         page.mouse.wheel(0, 1200)
         time.sleep(1)
     print(f"⚠️ Could not find {TARGET_CLASS} {TARGET_LOCATION} class after scrolling.")
@@ -107,9 +109,8 @@ def scroll_and_find_class(page):
 def main():
     print("🚀 Starting ALONI – Verified Functional Flow")
 
-    # Determine target date (13 days from today)
     target_date = datetime.now() + timedelta(days=13)
-    target_date_str = target_date.strftime("%a %b %d")
+    target_date_str = target_date.strftime("%-d")  # day of month without leading zero
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
 
     with sync_playwright() as p:
@@ -118,40 +119,53 @@ def main():
 
         print("🏠 Opening homepage…")
         page.goto(COREPOWER_URL, timeout=60000)
-
-        # Close popups and modals at start
         close_all_modals(page)
 
-        # Click profile icon
-        wait_and_click(page, "button[data-position='profile.1-profile']", description="profile icon")
+        # ✅ Login flow (restored from 2.9.2)
+        try:
+            page.wait_for_selector("img[alt='Profile Icon']", timeout=10000)
+            profile_icon = page.locator("img[alt='Profile Icon']").first
+            profile_icon.scroll_into_view_if_needed()
+            profile_icon.click()
+            print("✅ Clicked profile icon.")
+        except Exception as e:
+            print(f"⚠️ Failed to click profile icon: {e}")
 
-        # Try to click sign-in if visible
-        wait_and_click(page, "button[data-position='profile.1-sign-in']", description="sign-in button")
+        try:
+            sign_in_btn = page.locator("button[data-position='profile.1-sign-in']").first
+            sign_in_btn.wait_for(state="visible", timeout=8000)
+            sign_in_btn.click()
+            print("✅ Clicked Sign In button.")
+        except Exception as e:
+            print(f"⚠️ Sign In button not visible; continuing… ({e})")
 
-        # Fill credentials
-        wait_and_fill(page, "input#email", EMAIL, description="email field")
-        wait_and_fill(page, "input#password", PASSWORD, description="password field")
+        try:
+            page.wait_for_selector("input[name='username']", timeout=10000)
+            page.fill("input[name='username']", EMAIL)
+            page.fill("input[name='password']", PASSWORD)
+            page.keyboard.press("Enter")
+            print("✅ Submitted credentials.")
+        except Exception as e:
+            print(f"⚠️ Could not fill credentials: {e}")
 
-        # Submit login
-        wait_and_click(page, "button[type='submit']", description="submit login")
-
-        # Ensure modal cleanup after login
+        time.sleep(5)
         close_all_modals(page)
-        time.sleep(3)
 
-        # Click 'Book a class'
+        # ✅ Book a class
         wait_and_click(page, "button[data-position='book-a-class']", description="Book a class")
         close_all_modals(page)
 
-        # Select target date
-        if not select_target_date(page, str(target_date.day)):
+        # ✅ Select target date
+        if not select_target_date(page, target_date_str):
             print("⚠️ Date selection failed, attempting fallback scroll")
             page.mouse.wheel(0, 2000)
             time.sleep(1)
-            select_target_date(page, str(target_date.day))
+            select_target_date(page, target_date_str)
 
+        # ✅ Find and book class
         print("💫 Scrolling through class list to find target session…")
         found = scroll_and_find_class(page)
+
         if found:
             print("✅ Booking attempt complete — check confirmation popup or email.")
         else:
