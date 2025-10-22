@@ -97,7 +97,6 @@ def scroll_and_find_class(page):
             try:
                 time_text = rows.nth(j).inner_text().strip()
                 if time_text == TARGET_CLASS:
-                    # Verify correct location near this time slot
                     location = rows.nth(j).locator(
                         "xpath=ancestor::div[contains(@class,'session-card')]//div[contains(text(), 'Flatiron')]"
                     )
@@ -121,7 +120,7 @@ def main():
     print("🚀 Starting ALONI – Verified Functional Flow")
 
     target_date = datetime.now() + timedelta(days=13)
-    target_date_str = target_date.strftime("%-d")  # day of month
+    target_date_str = target_date.strftime("%-d")
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
 
     with sync_playwright() as p:
@@ -135,30 +134,40 @@ def main():
         # === LOGIN PHASE ===
         print("\n🔐 LOGIN PHASE")
         try:
-            page.wait_for_selector("img[alt='Profile Icon']", timeout=10000)
-            profile_icon = page.locator("img[alt='Profile Icon']").first
-            profile_icon.scroll_into_view_if_needed()
-            profile_icon.click()
-            print("✅ Clicked profile icon.")
+            # Wait until profile icon exists (not necessarily visible)
+            page.wait_for_selector("img[alt='Profile Icon']", state="attached", timeout=15000)
+            icon = page.locator("img[alt='Profile Icon']").first
+            icon.evaluate("el => el.scrollIntoView({behavior: 'smooth', block: 'center'})")
+            icon.click(force=True)
+            print("✅ Force-clicked profile icon (visibility bypass).")
         except Exception as e:
-            print(f"⚠️ Failed to click profile icon: {e}")
+            print(f"⚠️ Still failed to click profile icon: {e}")
 
+        # Try to open the sign-in modal
         try:
-            sign_in_btn = page.locator("button[data-position='profile.1-sign-in']").first
-            sign_in_btn.wait_for(state="visible", timeout=8000)
-            sign_in_btn.click()
-            print("✅ Clicked Sign In button.")
+            page.locator("button[data-position='profile.1-sign-in']").first.click(force=True)
+            print("✅ Force-clicked Sign In button.")
         except Exception as e:
-            print(f"⚠️ Sign In button not visible; continuing… ({e})")
+            print(f"⚠️ Could not click Sign In button (likely already open): {e}")
 
+        # Fill credentials
         try:
-            page.wait_for_selector("input[name='username']", timeout=10000)
+            page.wait_for_selector("input[name='username']", timeout=15000)
             page.fill("input[name='username']", EMAIL)
             page.fill("input[name='password']", PASSWORD)
             page.keyboard.press("Enter")
             print("✅ Submitted credentials.")
         except Exception as e:
             print(f"⚠️ Could not fill credentials: {e}")
+            try:
+                icon.click(force=True)
+                page.wait_for_selector("input[name='username']", timeout=8000)
+                page.fill("input[name='username']", EMAIL)
+                page.fill("input[name='password']", PASSWORD)
+                page.keyboard.press("Enter")
+                print("✅ Retried login and submitted.")
+            except Exception as e2:
+                print(f"❌ Second login attempt failed: {e2}")
 
         time.sleep(5)
         close_all_modals(page)
