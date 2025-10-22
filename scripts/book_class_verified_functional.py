@@ -1,434 +1,389 @@
+#!/usr/bin/env python3
 # scripts/book_class_verified_functional.py
+# PYTHON ≥3.9
+from __future__ import annotations
+
 import os
 import sys
-import time
-import datetime as dt
-from typing import Optional
+import traceback
+from datetime import datetime, timedelta
 
-from playwright.sync_api import (
-    sync_playwright,
-    Browser,
-    Page,
-    TimeoutError as PWTimeoutError,
-)
-from dotenv import load_dotenv
+from playwright.sync_api import Playwright, sync_playwright, Page, BrowserContext, TimeoutError as PWTimeout
 
-# ---------------------------
-# Config & helpers
-# ---------------------------
-
-load_dotenv()
-EMAIL = os.getenv("COREPOWER_EMAIL")
-PASSWORD = os.getenv("COREPOWER_PASSWORD")
-
-if not EMAIL or not PASSWORD:
-    raise RuntimeError("Missing COREPOWER_EMAIL or COREPOWER_PASSWORD in environment/.env")
-
-HOME_URL = "https://www.corepoweryoga.com/"  # adjust if you use a different landing URL
-HEADLESS = True if os.getenv("CI", "false").lower() == "true" else True
-DEFAULT_TIMEOUT = 30_000  # ms
-
+# ----------------------------
+# Basic logging helpers
+# ----------------------------
 def log(msg: str) -> None:
     print(msg, flush=True)
 
-def sleep_s(ms: int) -> None:
-    time.sleep(ms / 1000.0)
+def now() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def today_local() -> dt.date:
-    # Keep everything in local runner date so "days ahead" stays predictable
-    return dt.date.today()
+# ----------------------------
+# Environment / config
+# ----------------------------
+HOMEPAGE_URL = "https://www.corepoweryoga.com/"  # adjust if you’re targeting a different entry URL
 
-def target_date(days_ahead: int = 13) -> dt.date:
-    return today_local() + dt.timedelta(days=days_ahead)
+EMAIL_ENV = "COREPOWER_EMAIL"
+PASS_ENV  = "COREPOWER_PASSWORD"
 
-# ---------------------------
-# Popup/Modal handling
-# ---------------------------
+SCREENSHOTS_DIR = "screenshots"
+VIDEOS_DIR      = "videos"
+TRACE_ZIP       = "trace.zip"
 
-def dismiss_popups(page: Page, context: str = "") -> None:
-    """
-    Try multiple strategies (safe to call often).
-    Intentionally tolerant: failures here shouldn't abort the run.
-    """
-    prefixes = "💨 " if not context else f"💨 [{context}] "
+DEFAULT_TIMEOUT = 15_000
+
+# ----------------------------
+# Popups & overlays
+# ----------------------------
+def dismiss_popups(page: Page, phase: str = "") -> None:
+    """Best-effort removal of visible modals/overlays/blocks."""
     try:
-        # Common close patterns
-        close_selectors = [
-            "button:has-text('Close')",
-            "button[aria-label='Close']",
-            "button[aria-label='close']",
-            "button[aria-label='Dismiss']",
-            "button[title='Close']",
+        # Close known dialog with Close button (e.g., 30% off promo)
+        closed = False
+        for sel in [
             "div[role='dialog'] button:has-text('Close')",
             "div[role='dialog'] button[aria-label='Close']",
-            "div[role='dialog'] button:has-text('No thanks')",
-            "button:has-text('No thanks')",
-            "button:has-text('Not now')",
-            "button:has-text('×')",
-            "[data-testid='close-button']",
-            "[data-test='close']",
-            ".modal button.close",
-            ".Popup button.close",
-        ]
+            "button[aria-label='Close']",
+            "[data-testid='close']",
+            ".modal [data-dismiss='modal']",
+            "[data-position='close']",
+        ]:
+            btns = page.locator(sel)
+            if btns.count() > 0:
+                btns.first.click(timeout=1000, trial=True)
+                btns.first.click(timeout=1000)
+                closed = True
 
-        for sel in close_selectors:
-            loc = page.locator(sel)
-            count = loc.count()
-            if count:
-                # Click all visible matches (there can be stacked promos)
-                for i in range(min(count, 5)):
-                    try:
-                        loc.nth(i).click(timeout=1000)
-                        log(f"{prefixes}Removed modal element via {sel}")
-                    except Exception:
-                        pass
+        if closed:
+            log(f"💨 [{phase}] Removed modal element via 'Close' button")
 
-        # Kill any obvious newsletter/30% email captures that block clicks
-        # by removing their containers if present.
-        # We purposely limit the number of removals so we don't nuke the page.
-        page.evaluate(
-            """
-            (() => {
-              const candidates = Array.from(document.querySelectorAll([
-                'div[role="dialog"]',
-                'div[class*="modal"]',
-                'div[id*="popup"]',
-                'div[class*="Popup"]',
-                'div[class*="newsletter"]',
-                'div[class*="subscribe"]',
-              ].join(',')));
-              let removed = 0;
-              for (const el of candidates) {
-                const z = Number(getComputedStyle(el).zIndex || '0');
-                const blocksClicks = z >= 1000 || (el.getBoundingClientRect().width > 200 && el.getBoundingClientRect().height > 100);
-                if (blocksClicks) {
-                  el.remove();
-                  removed++;
-                  if (removed >= 3) break;
-                }
-              }
-            })();
-            """
-        )
     except Exception:
-        # Never fail on dismissal
+        # non-fatal
         pass
 
-# ---------------------------
-# Auth flow: Profile → Sign in → Credentials
-# ---------------------------
-
-def click_profile_then_sign_in(page: Page) -> bool:
-    """
-    Enforces the strict order you requested:
-      (1) click Profile icon
-      (2) click Sign in button
-      (3) return True when sign-in form is visible (so caller can fill creds)
-    If already logged in, returns False (caller can skip credentials).
-    """
-    log("\n🔐 LOGIN PHASE (strict order)")
-    dismiss_popups(page, "pre-login")
-
-    # (1) PROFILE ICON
-    # Be explicit: wait for a *visible* profile icon, not just present.
-    # Try a few variants and pick the first visible.
-    profile_selectors = [
-        "img[alt='Profile Icon']",
-        "[data-position='profile']",
-        "button:has(svg[aria-label='Profile'])",
-        "a[href*='profile']",
-    ]
-
-    profile_clicked = False
-    for sel in profile_selectors:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(state="visible", timeout=8000)
-            loc.click()
-            profile_clicked = True
-            log("✅ Clicked Profile icon")
-            break
-        except PWTimeoutError:
-            log(f"⚠️ Profile icon not visible via {sel} (timeout)")
-        except Exception as e:
-            log(f"⚠️ Could not click profile via {sel}: {e}")
-
-    if not profile_clicked:
-        # As a fallback, try to reveal header then retry once
-        try:
-            page.keyboard.press("Escape")
-            dismiss_popups(page, "profile-fallback")
-            loc = page.locator("img[alt='Profile Icon']").first
-            loc.wait_for(state="visible", timeout=5000)
-            loc.click()
-            log("✅ Clicked Profile icon (fallback)")
-            profile_clicked = True
-        except Exception:
-            pass
-
-    if not profile_clicked:
-        log("❌ Could not click Profile icon")
-        return False
-
-    dismiss_popups(page, "post-profile")
-
-    # (2) SIGN IN BUTTON
-    sign_in_selectors = [
-        "button[data-position='profile.1-sign-in']",
-        "button:has-text('Sign in')",
-        "a:has-text('Sign in')",
-        "button[aria-label='Sign in']",
-    ]
-
-    sign_in_clicked = False
-    sign_in_button_visible = False
-
-    for sel in sign_in_selectors:
-        try:
-            loc = page.locator(sel).first
-            # We check visibility twice: first to confirm it's there, then click.
-            loc.wait_for(state="visible", timeout=8000)
-            sign_in_button_visible = True
-            loc.click()
-            sign_in_clicked = True
-            log("✅ Clicked 'Sign in' button")
-            break
-        except PWTimeoutError:
-            log(f"⚠️ 'Sign in' not visible via {sel} (timeout)")
-        except Exception as e:
-            log(f"⚠️ Could not click 'Sign in' via {sel}: {e}")
-
-    # If the Sign in button was never visible, assume possibly already logged in
-    if not sign_in_clicked and not sign_in_button_visible:
-        log("🔎 Login check: 'Sign in' not visible -> assuming already logged in.")
-        return False
-
-    dismiss_popups(page, "post-sign-in-click")
-
-    # (3) VERIFY CREDENTIAL FORM APPEARED
+    # Press Escape once or twice to hide any focus-trap overlays
     try:
-        # Prefer specific inputs, but keep fallbacks
-        email_input = page.locator("input[type='email'], input[name='email']")
-        password_input = page.locator("input[type='password'], input[name='password']")
-        email_input.wait_for(state="visible", timeout=10_000)
-        password_input.wait_for(state="visible", timeout=10_000)
-        log("✅ Sign-in form visible")
-        return True
-    except PWTimeoutError:
-        log("⚠️ Sign-in form did not appear—assuming session is already authenticated.")
-        return False
-
-def submit_credentials(page: Page, email: str, password: str) -> None:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
     try:
-        email_input = page.locator("input[type='email'], input[name='email']").first
-        pwd_input = page.locator("input[type='password'], input[name='password']").first
-        submit_btn = page.locator("button[type='submit'], button:has-text('Sign in')").first
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
 
-        email_input.fill(email, timeout=10_000)
-        pwd_input.fill(password, timeout=10_000)
-        dismiss_popups(page, "pre-submit")
-        submit_btn.click(timeout=10_000)
+    # As a last resort, nuke common overlay/backdrop nodes (best-effort)
+    try:
+        page.evaluate(
+            """
+            (selectors) => {
+              for (const sel of selectors) {
+                document.querySelectorAll(sel).forEach(el => {
+                  el.remove();
+                });
+              }
+            }
+            """,
+            [
+                ".modal-backdrop",
+                "[aria-modal='true']",
+                "[data-tlc-modal]",
+                ".newsletter-modal",
+                ".overlay, .Overlay",
+                ".cookie-banner, .cookie-consent",
+            ],
+        )
+    except Exception:
+        pass
 
-        # Wait for a signed-in indicator: profile menu shows user items / or sign-out appears.
-        page.wait_for_timeout(500)  # brief settle
-        possible_auth_ok = [
-            "button:has-text('Sign out')",
-            "a:has-text('Sign out')",
-            "a[href*='account']",
-        ]
-        for sel in possible_auth_ok:
-            try:
-                page.locator(sel).first.wait_for(state="visible", timeout=8000)
-                log("✅ Logged in")
-                return
-            except Exception:
-                pass
-
-        # Fallback: absence of the email/password inputs after submission
+# ----------------------------
+# Safe click utility
+# ----------------------------
+def safe_click(page: Page, selector: str, label: str, timeout=DEFAULT_TIMEOUT) -> bool:
+    try:
+        loc = page.locator(selector).first
+        loc.wait_for(state="visible", timeout=timeout)
+        loc.scroll_into_view_if_needed(timeout=2000)
+        dismiss_popups(page, f"pre-click-{label}")
         try:
-            page.locator("input[type='password']").first.wait_for(state="hidden", timeout=8000)
-            log("✅ Logged in (inputs disappeared)")
+            loc.click(timeout=5000)
+            log(f"✅ Clicked: {label} ({selector})")
+            return True
         except Exception:
-            log("⚠️ Could not confirm login; continuing optimistically.")
-
+            dismiss_popups(page, f"overlay-{label}")
+            # Force JS click if the node is there but overlaid
+            handle = loc.element_handle()
+            if handle:
+                page.evaluate("(el)=>el.click()", handle)
+                log(f"✅ JS-clicked: {label} ({selector})")
+                return True
+            raise
     except Exception as e:
-        log(f"❌ Login submission failed: {e}")
-        raise
+        log(f"… not clickable yet: {label} ({selector}) :: {e}")
+        return False
 
-# ---------------------------
-# Navigation & Date handling
-# ---------------------------
+# ----------------------------
+# STRICT LOGIN ORDER:
+#   1) Click Profile icon
+#   2) Click Sign in
+#   3) Enter credentials
+# ----------------------------
+PROFILE_CANDIDATES = [
+    "[data-position='profile']",
+    "button[data-position='profile']",
+    "a[data-position='profile']",
+    "img[alt='Profile Icon']",
+    "button:has(svg[aria-label='Profile'])",
+    "a[href*='profile']:not([href='#'])",
+    "button[aria-label='Profile']",
+    "button:has-text('Account')",
+    "a:has-text('Account')",
+]
 
+SIGNIN_CANDIDATES = [
+    "button:has-text('Sign in')",
+    "a:has-text('Sign in')",
+    "button:has-text('Sign In')",
+    "a:has-text('Sign In')",
+    "[data-position='sign-in']",
+    "a[href*='sign-in']",
+]
+
+EMAIL_INPUT_CANDIDATES = [
+    "input[type='email']",
+    "input[name='email']",
+    "input[id*='email']",
+    "input[autocomplete='email']",
+]
+
+PASSWORD_INPUT_CANDIDATES = [
+    "input[type='password']",
+    "input[name='password']",
+    "input[id*='password']",
+    "input[autocomplete='current-password']",
+]
+
+SUBMIT_CANDIDATES = [
+    "button[type='submit']",
+    "button:has-text('Sign in')",
+    "button:has-text('Log in')",
+    "button:has-text('Log In')",
+]
+
+def strict_open_account_menu(page: Page) -> None:
+    log("\n🔐 LOGIN PHASE (strict order)")
+    # 1) Click profile icon/menu first (hard requirement)
+    for sel in PROFILE_CANDIDATES:
+        if safe_click(page, sel, "Profile icon/menu", timeout=8000):
+            return
+    # If we couldn't find it at all, fail here (per strict order)
+    raise RuntimeError("Profile icon/menu not found to begin login flow.")
+
+def click_sign_in(page: Page) -> None:
+    # 2) Click Sign in within the profile/account menu
+    dismiss_popups(page, "pre-sign-in")
+    for sel in SIGNIN_CANDIDATES:
+        if safe_click(page, sel, "Sign in"):
+            return
+    # Try minor settle and retry once
+    page.wait_for_timeout(500)
+    dismiss_popups(page, "retry-sign-in")
+    for sel in SIGNIN_CANDIDATES:
+        if safe_click(page, sel, "Sign in (retry)"):
+            return
+    raise RuntimeError("Could not click 'Sign in' after opening the profile menu.")
+
+def perform_login(page: Page, email: str, password: str) -> None:
+    # 3) Enter credentials on the sign-in form
+    dismiss_popups(page, "pre-credentials")
+
+    email_field = None
+    pwd_field = None
+
+    for sel in EMAIL_INPUT_CANDIDATES:
+        loc = page.locator(sel)
+        if loc.count() > 0:
+            email_field = loc.first
+            break
+    for sel in PASSWORD_INPUT_CANDIDATES:
+        loc = page.locator(sel)
+        if loc.count() > 0:
+            pwd_field = loc.first
+            break
+
+    if not email_field:
+        raise RuntimeError("Email input not found on sign-in form.")
+    if not pwd_field:
+        raise RuntimeError("Password input not found on sign-in form.")
+
+    email_field.fill(email, timeout=DEFAULT_TIMEOUT)
+    pwd_field.fill(password, timeout=DEFAULT_TIMEOUT)
+
+    # Submit
+    for sel in SUBMIT_CANDIDATES:
+        if safe_click(page, sel, "Submit credentials"):
+            break
+    else:
+        # Enter key fallback
+        pwd_field.press("Enter")
+
+    # Optionally wait for an authenticated signal (profile initials, sign-out link, etc.)
+    page.wait_for_timeout(1000)
+    log("🔒 Credentials submitted.")
+
+# ----------------------------
+# Navigation: Book a Class (your exact selector + fallbacks)
+# ----------------------------
 def go_to_book_a_class(page: Page) -> None:
     log("\n📍 NAVIGATION: Book a Class")
     dismiss_popups(page, "pre-nav")
-    nav_variants = [
-        "a[href*='book-a-class']",
-        "a:has-text('Book a Class')",
-        "button:has-text('Book a Class')",
-        "a:has-text('Book a class')",
+
+    sel_exact = "button[data-position='book-a-class']"
+    fallbacks = [
+        "button.btn.btn-primary:has-text('Book a class')",
         "button:has-text('Book a class')",
+        "button:has-text('Book a Class')",
+        "a[href*='book-a-class']",
+        "a:has-text('Book a class')",
+        "a:has-text('Book a Class')",
     ]
 
-    for sel in nav_variants:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(state="visible", timeout=15_000)
-            loc.click()
-            log("✅ Navigated via: " + sel)
-            return
-        except Exception:
-            pass
-
-    # Last resort: click any element that looks like a primary CTA for booking.
-    try:
-        page.get_by_text("Book a Class", exact=False).first.click(timeout=8_000)
-        log("✅ Navigated via text search fallback")
+    if safe_click(page, sel_exact, "Book a class (exact)"):
         return
-    except Exception:
-        log("❌ Could not navigate to 'Book a Class'.")
-        raise RuntimeError("Navigation to 'Book a Class' failed")
 
-def select_calendar_date(page: Page, date_obj: dt.date) -> None:
-    """
-    Choose a specific date without relying on list order.
-    The strategy:
-      - construct accessible labels and data attributes that commonly appear
-      - search for a date cell that matches the exact calendar day
-      - never iterate sessions "by displayed order" (prevents reversed selection)
-    """
-    log("\n🗓️  Selecting target date deterministically")
+    page.wait_for_timeout(500)
+    dismiss_popups(page, "settle-retry")
+    if safe_click(page, sel_exact, "Book a class (exact retry)"):
+        return
 
-    # Common accessible labels: "Tuesday, November 4", etc.
-    # Build a few variants to maximize match rate.
-    label_variants = [
-        date_obj.strftime("%A, %B %-d"),
-        date_obj.strftime("%A, %B %d"),
-        date_obj.strftime("%B %-d, %Y"),
-        date_obj.strftime("%B %d, %Y"),
-        date_obj.strftime("%Y-%m-%d"),
-        date_obj.strftime("%m/%d/%Y"),
-    ]
+    for i, fb in enumerate(fallbacks):
+        if safe_click(page, fb, f"Book a class fallback #{i+1}"):
+            return
 
-    # Search strategies in order, clicking the first match found.
-    strategies = [
-        # aria-label cell
-        lambda: page.locator(
-            ",".join([f"[aria-label*='{lbl}']" for lbl in label_variants])
-        ),
-        # data-date cell
-        lambda: page.locator(
-            f"[data-date='{date_obj.isoformat()}'], [data-day='{date_obj.isoformat()}']"
-        ),
-        # role-based day button (common in accessible calendars)
-        lambda: page.get_by_role("button", name=date_obj.strftime("%-d")).filter(
-            has=page.locator("[aria-label*='%s']" % date_obj.strftime("%B"))
-        ),
-        # textual day match inside a date grid
-        lambda: page.locator("td,div,button").filter(has_text=date_obj.strftime("%-d")),
-    ]
-
-    # First, try to ensure the calendar is visible (some sites lazy-load it)
+    # Debug helper
     try:
-        page.wait_for_selector("[role='grid'], [class*='calendar'], [data-component*='calendar']", timeout=8000)
+        positions = page.eval_on_selector_all(
+            "button[data-position]",
+            "els => els.map(e => e.getAttribute('data-position'))"
+        )
+        log(f"🔎 Buttons with data-position on page: {positions}")
     except Exception:
-        # If not, just proceed—selectors below may still work once found directly.
         pass
 
-    dismiss_popups(page, "pre-date-select")
+    raise RuntimeError("Could not navigate to 'Book a Class'.")
 
-    clicked = False
-    for strat in strategies:
-        try:
-            loc = strat()
-            if loc.count() == 0:
-                continue
-            # Pick the element whose aria-label or data-date matches the *exact* date
-            # This prevents "wrong order" or "closest match" mistakes.
-            for i in range(min(loc.count(), 10)):
-                cand = loc.nth(i)
-                try:
-                    # Avoid disabled/outside-month
-                    disabled = cand.get_attribute("aria-disabled")
-                    if disabled and disabled.lower() in ("true", "disabled"):
-                        continue
-                except Exception:
-                    pass
-                try:
-                    cand.scroll_into_view_if_needed(timeout=2000)
-                    cand.click(timeout=3000)
-                    clicked = True
-                    log(f"✅ Clicked calendar cell #{i+1}")
-                    break
-                except Exception:
-                    continue
-            if clicked:
-                break
-        except Exception:
-            continue
+# ----------------------------
+# Example: pick a date (T+13 days, from your logs)
+# ----------------------------
+def pick_target_date(page: Page, days_ahead: int = 13) -> None:
+    target = datetime.utcnow().date() + timedelta(days=days_ahead)
+    label = target.strftime("%A, %b %d")
+    log(f"🗓️  Selecting target date: {label}")
 
-    if not clicked:
-        raise RuntimeError("Could not select the target date on the schedule/calendar")
+    dismiss_popups(page, "pre-date-pick")
 
-    dismiss_popups(page, "post-date-select")
+    # Very site-specific; adjust selectors to your calendar widget
+    candidates = [
+        f"button[aria-label*='{label}']",
+        f"button:has-text('{label}')",
+        f"[role='button']:has-text('{label}')",
+    ]
+    for sel in candidates:
+        if safe_click(page, sel, f"date {label}"):
+            return
 
-# ---------------------------
-# Main
-# ---------------------------
+    # If date isn’t visible, try next/prev arrows a few times (example)
+    for _ in range(3):
+        if safe_click(page, "button[aria-label='Next']", "calendar next"):
+            page.wait_for_timeout(300)
+            if safe_click(page, candidates[0], f"date {label} (post-next)"):
+                return
 
-def main() -> int:
-    target = target_date(13)
+    raise RuntimeError(f"Could not select date {label}.")
+
+# ----------------------------
+# Main run
+# ----------------------------
+def run(playwright: Playwright) -> int:
+    email = os.getenv(EMAIL_ENV, "").strip()
+    password = os.getenv(PASS_ENV, "").strip()
+    if not email or not password:
+        log(f"❌ Missing credentials. Ensure {EMAIL_ENV} and {PASS_ENV} are set.")
+        return 1
+
+    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    os.makedirs(VIDEOS_DIR, exist_ok=True)
+
     log("🚀 Starting ALONI – Strict-Order Functional Flow 3.1")
-    log(f"📅 Target date: {target.strftime('%A, %b %d')} ({(target - today_local()).days} days from today)")
+    target = datetime.utcnow().date() + timedelta(days=13)
+    log(f"📅 Target date: {target.strftime('%A, %b %d')} (13 days from today)")
 
-    with sync_playwright() as p:
-        browser: Browser = p.chromium.launch(headless=HEADLESS, args=["--disable-dev-shm-usage"])
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            ignore_https_errors=True,
-        )
+    browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+    context: BrowserContext = browser.new_context(
+        viewport={"width": 1280, "height": 800},
+        record_video_dir=VIDEOS_DIR,
+    )
 
-        # Optional trace start (kept minimal so artifacts exist if we crash early)
+    # Enable tracing early
+    context.tracing.start(screenshots=True, snapshots=True, sources=True)
+
+    page: Page = context.new_page()
+    page.set_default_timeout(DEFAULT_TIMEOUT)
+
+    try:
+        log("🏠 Opening homepage…")
+        page.goto(HOMEPAGE_URL, wait_until="domcontentloaded", timeout=45_000)
+        dismiss_popups(page, "on-load")
+
+        # STRICT LOGIN ORDER
+        strict_open_account_menu(page)
+        click_sign_in(page)
+        perform_login(page, email, password)
+
+        # Navigate explicitly to Book a Class
+        go_to_book_a_class(page)
+
+        # (Optional) date selection to prove nav works
+        pick_target_date(page, days_ahead=13)
+
+        log("🎉 Flow completed through date selection.")
+        rc = 0
+
+    except Exception as e:
+        log(f"❌ Fatal error: {e}")
         try:
-            context.tracing.start(screenshots=True, snapshots=True, sources=False)
+            fname = f"{SCREENSHOTS_DIR}/failure-{now()}.png"
+            page.screenshot(path=fname, full_page=True)
+            log(f"📸 Saved failure screenshot: {fname}")
         except Exception:
             pass
 
-        page: Page = context.new_page()
-        page.set_default_timeout(DEFAULT_TIMEOUT)
+        traceback.print_exc()
+        rc = 1
 
+    finally:
+        # Export trace
         try:
-            log("🏠 Opening homepage…")
-            page.goto(HOME_URL, wait_until="domcontentloaded")
-            dismiss_popups(page, "on-load")
-
-            # LOGIN (strict order)
-            must_fill = click_profile_then_sign_in(page)
-            if must_fill:
-                submit_credentials(page, EMAIL, PASSWORD)
-
-            # NAVIGATE
-            go_to_book_a_class(page)
-
-            # SELECT DATE deterministically
-            select_calendar_date(page, target)
-
-            log("✅ Reached schedule and selected target date.")
-            return 0
-
-        except Exception as e:
-            log(f"❌ Fatal error: {e}")
-            return 1
-        finally:
-            # Save trace so your CI can upload it
-            try:
-                os.makedirs("videos", exist_ok=True)
-                os.makedirs("screenshots", exist_ok=True)
-                context.tracing.stop(path="trace.zip")
-            except Exception:
-                pass
+            context.tracing.stop(path=TRACE_ZIP)
+            log(f"🧵 Trace exported: {TRACE_ZIP}")
+        except Exception:
+            pass
+        try:
             context.close()
             browser.close()
+        except Exception:
+            pass
+
+    return rc
+
+def main() -> None:
+    # Make output directories upfront for CI artifact steps
+    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    os.makedirs(VIDEOS_DIR, exist_ok=True)
+
+    with sync_playwright() as playwright:
+        code = run(playwright)
+        sys.exit(code)
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
