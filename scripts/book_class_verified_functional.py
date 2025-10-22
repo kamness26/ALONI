@@ -12,7 +12,6 @@ TARGET_CLASS = "6:15 pm"
 
 
 def close_all_modals(page):
-    """Force close or remove any lingering modals that block interactions."""
     modals = [
         "button:has-text('Close')",
         "button[aria-label*='close' i]",
@@ -32,36 +31,7 @@ def close_all_modals(page):
             pass
 
 
-def wait_and_click(page, selector, timeout=8000, description=""):
-    """Click an element with wait and retry handling."""
-    try:
-        page.wait_for_selector(selector, timeout=timeout)
-        page.locator(selector).first.click()
-        print(f"✅ Clicked {description or selector}")
-    except PlaywrightTimeoutError:
-        print(f"⚠️ Timeout waiting for {description or selector}")
-    except Exception as e:
-        print(f"⚠️ Could not click {description or selector}: {e}")
-        close_all_modals(page)
-        try:
-            page.locator(selector).first.click()
-            print(f"✅ Clicked {description or selector} after cleanup")
-        except Exception:
-            print(f"❌ Failed to click {description or selector} after cleanup")
-
-
-def wait_and_fill(page, selector, value, description=""):
-    """Safely fill input field."""
-    try:
-        page.wait_for_selector(selector, timeout=6000)
-        page.fill(selector, value)
-        print(f"✅ Filled {description or selector}")
-    except Exception as e:
-        print(f"⚠️ Could not fill {description or selector}: {e}")
-
-
 def verify_login(page):
-    """Return True if we detect a logged-in state (Account menu visible)."""
     try:
         if page.locator("button[data-position='profile.1-sign-out']").count() > 0:
             print("🟢 Login verified — user is signed in.")
@@ -72,7 +42,6 @@ def verify_login(page):
 
 
 def select_target_date(page, target_date_str):
-    """Click on the target date from the booking calendar."""
     try:
         calendar_selector = f"div.cal-date:has-text('{target_date_str}')"
         print(f"🗓  Selecting date: {target_date_str}")
@@ -88,7 +57,7 @@ def select_target_date(page, target_date_str):
 
 
 def scroll_and_find_class(page):
-    """Scrolls down the class list to find the target session."""
+    """Scrolls through the schedule to locate and book the target session."""
     for i in range(17):
         rows = page.locator("div.session-card_sessionTime__hNAfR")
         count = rows.count()
@@ -103,10 +72,12 @@ def scroll_and_find_class(page):
                     if location.count() > 0:
                         print(f"✅ Found {TARGET_CLASS} at {TARGET_LOCATION} — attempting booking…")
                         book_button = rows.nth(j).locator(
-                            "xpath=ancestor::div[contains(@class,'session-card')]//button[contains(., 'Book')]"
+                            "xpath=ancestor::div[contains(@class,'session-card')]//div[contains(@class,'btn-text') and contains(., 'BOOK')]"
                         )
+                        book_button.scroll_into_view_if_needed()
+                        time.sleep(1)
                         book_button.click()
-                        time.sleep(2)
+                        time.sleep(3)
                         return True
             except Exception:
                 continue
@@ -117,7 +88,7 @@ def scroll_and_find_class(page):
 
 
 def main():
-    print("🚀 Starting ALONI – Verified Functional Flow")
+    print("🚀 Starting ALONI 2.9.12 – Hover-Click Functional Flow")
 
     target_date = datetime.now() + timedelta(days=13)
     target_date_str = target_date.strftime("%-d")
@@ -133,24 +104,24 @@ def main():
 
         # === LOGIN PHASE ===
         print("\n🔐 LOGIN PHASE")
+
         try:
-            # Wait until profile icon exists (not necessarily visible)
+            # Hover to make icon and menu visible
             page.wait_for_selector("img[alt='Profile Icon']", state="attached", timeout=15000)
-            icon = page.locator("img[alt='Profile Icon']").first
-            icon.evaluate("el => el.scrollIntoView({behavior: 'smooth', block: 'center'})")
-            icon.click(force=True)
-            print("✅ Force-clicked profile icon (visibility bypass).")
+            page.hover("img[alt='Profile Icon']")
+            page.wait_for_timeout(800)
+            page.click("img[alt='Profile Icon']")
+            print("✅ Hovered and clicked profile icon.")
         except Exception as e:
-            print(f"⚠️ Still failed to click profile icon: {e}")
+            print(f"⚠️ Failed to interact with profile icon: {e}")
 
-        # Try to open the sign-in modal
         try:
-            page.locator("button[data-position='profile.1-sign-in']").first.click(force=True)
-            print("✅ Force-clicked Sign In button.")
+            page.wait_for_selector("button[data-position='profile.1-sign-in']", state="visible", timeout=8000)
+            page.click("button[data-position='profile.1-sign-in']")
+            print("✅ Clicked Sign In button.")
         except Exception as e:
-            print(f"⚠️ Could not click Sign In button (likely already open): {e}")
+            print(f"⚠️ Could not click Sign In button: {e}")
 
-        # Fill credentials
         try:
             page.wait_for_selector("input[name='username']", timeout=15000)
             page.fill("input[name='username']", EMAIL)
@@ -159,15 +130,6 @@ def main():
             print("✅ Submitted credentials.")
         except Exception as e:
             print(f"⚠️ Could not fill credentials: {e}")
-            try:
-                icon.click(force=True)
-                page.wait_for_selector("input[name='username']", timeout=8000)
-                page.fill("input[name='username']", EMAIL)
-                page.fill("input[name='password']", PASSWORD)
-                page.keyboard.press("Enter")
-                print("✅ Retried login and submitted.")
-            except Exception as e2:
-                print(f"❌ Second login attempt failed: {e2}")
 
         time.sleep(5)
         close_all_modals(page)
@@ -179,11 +141,18 @@ def main():
 
         # === BOOKING PHASE ===
         print("\n📘 BOOKING PHASE")
-        wait_and_click(page, "button[data-position='book-a-class']", description="Book a class")
+
+        try:
+            page.wait_for_selector("button[data-position='book-a-class']", timeout=10000)
+            page.click("button[data-position='book-a-class']")
+            print("✅ Clicked 'Book a class'.")
+        except Exception as e:
+            print(f"⚠️ Could not click 'Book a class': {e}")
+
         close_all_modals(page)
 
         if not select_target_date(page, target_date_str):
-            print("⚠️ Date selection failed, attempting fallback scroll")
+            print("⚠️ Date selection failed, attempting scroll fallback.")
             page.mouse.wheel(0, 2000)
             time.sleep(1)
             select_target_date(page, target_date_str)
