@@ -1,14 +1,14 @@
 from playwright.sync_api import sync_playwright
 from datetime import datetime, timedelta
-import time
+import time, os
 
 def main():
-    print("🚀 Starting ALONI 2.9.3 – Hybrid Mode (Login Always, Book Conditionally)…")
+    print("🚀 Starting ALONI 2.9.4 – Strict Flow (Profile Icon → Sign In)…")
 
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
-
     should_book = weekday in ["Monday", "Tuesday", "Wednesday"]
+
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
 
     with sync_playwright() as p:
@@ -18,7 +18,7 @@ def main():
         print("🏠 Opening homepage…")
         page.goto("https://www.corepoweryoga.com/", timeout=60000)
 
-        # Close potential popups
+        # --- Close popups ---
         for selector in ["button:has-text('Close')", "button[aria-label*='close' i]"]:
             try:
                 page.locator(selector).first.click(timeout=3000)
@@ -26,33 +26,44 @@ def main():
             except:
                 pass
 
-        # Login flow (always runs daily)
+        # --- Step 1: Click the Profile Icon ---
         try:
-            page.locator("button[data-position='profile.1']").first.click(timeout=3000)
+            profile_icon = page.locator("button img[src*='profile_icon.svg']").first
+            profile_icon.wait_for(timeout=8000)
+            profile_icon.click()
             print("✅ Clicked profile icon.")
-        except:
-            print("ℹ️ Profile icon not found; continuing…")
+        except Exception as e:
+            print(f"❌ Could not click profile icon: {e}")
+            browser.close()
+            return
 
+        # --- Step 2: Click the Sign In button in dropdown ---
         try:
             sign_in_btn = page.locator("button[data-position='profile.1-sign-in']").first
-            sign_in_btn.wait_for(timeout=5000)
+            sign_in_btn.wait_for(timeout=8000)
             sign_in_btn.click()
             print("✅ Clicked 'Sign In' in profile dropdown.")
-        except:
-            print("⚠️ Sign In button not visible; continuing…")
+        except Exception as e:
+            print(f"❌ Could not click 'Sign In' button: {e}")
+            browser.close()
+            return
 
+        # --- Step 3: Fill credentials in the modal ---
         try:
             page.locator("input#email").wait_for(timeout=8000)
-            page.fill("input#email", "<YOUR_EMAIL>")
-            page.fill("input#password", "<YOUR_PASSWORD>")
+            page.fill("input#email", os.getenv("COREPOWER_EMAIL"))
+            page.fill("input#password", os.getenv("COREPOWER_PASSWORD"))
             page.locator("button:has-text('Sign In')").click()
             print("✅ Submitted credentials.")
         except Exception as e:
-            print(f"⚠️ Could not locate sign-in modal fields: {e}")
+            print(f"❌ Could not submit credentials: {e}")
+            browser.close()
+            return
 
+        # Wait for login to complete
         page.wait_for_timeout(4000)
 
-        # --- Modal intercept patch ---
+        # --- Handle any post-login modals before continuing ---
         try:
             modal_close_selectors = [
                 "button:has-text('Close')",
@@ -69,7 +80,7 @@ def main():
         except Exception as e:
             print(f"⚠️ No modal to close or error while closing modal: {e}")
 
-        # --- Conditional booking step ---
+        # --- Step 4: Conditional booking ---
         if should_book:
             print("🧘 Booking window is open — proceeding to book class.")
             try:
