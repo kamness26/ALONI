@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import time, os
 
 def main():
-    print("🚀 Starting ALONI 2.9.4 – Strict Flow (Profile Icon → Sign In)…")
+    print("🚀 Starting ALONI 2.9.5 – Strict Flow (Profile Icon → Sign In, Verified Selector)…")
 
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
@@ -17,6 +17,7 @@ def main():
 
         print("🏠 Opening homepage…")
         page.goto("https://www.corepoweryoga.com/", timeout=60000)
+        page.wait_for_load_state("networkidle")
 
         # --- Close popups ---
         for selector in ["button:has-text('Close')", "button[aria-label*='close' i]"]:
@@ -28,9 +29,9 @@ def main():
 
         # --- Step 1: Click the Profile Icon ---
         try:
-            profile_icon = page.locator("button img[src*='profile_icon.svg']").first
-            profile_icon.wait_for(timeout=8000)
-            profile_icon.click()
+            profile_btn = page.locator("button[data-position='profile.1']").first
+            profile_btn.wait_for(timeout=10000)
+            profile_btn.click()
             print("✅ Clicked profile icon.")
         except Exception as e:
             print(f"❌ Could not click profile icon: {e}")
@@ -60,18 +61,16 @@ def main():
             browser.close()
             return
 
-        # Wait for login to complete
         page.wait_for_timeout(4000)
 
-        # --- Handle any post-login modals before continuing ---
+        # --- Handle any post-login modals ---
         try:
-            modal_close_selectors = [
+            for selector in [
                 "button:has-text('Close')",
                 "button[aria-label*='close' i]",
                 "div.modal button.close",
                 "button[aria-label='Dismiss']",
-            ]
-            for selector in modal_close_selectors:
+            ]:
                 loc = page.locator(selector).first
                 if loc.is_visible():
                     loc.click()
