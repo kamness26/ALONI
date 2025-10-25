@@ -3,16 +3,12 @@ from datetime import datetime, timedelta
 import time
 
 def main():
-    print("🚀 Starting ALONI 2.9.2 – Verified Booking Flow…")
+    print("🚀 Starting ALONI 2.9.3 – Hybrid Mode (Login Always, Book Conditionally)…")
 
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
 
-    # Skip if not Mon/Tue/Wed
-    if weekday not in ["Monday", "Tuesday", "Wednesday"]:
-        print(f"📆 Skipping booking: {weekday} is not a target day.")
-        return
-
+    should_book = weekday in ["Monday", "Tuesday", "Wednesday"]
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
 
     with sync_playwright() as p:
@@ -22,54 +18,41 @@ def main():
         print("🏠 Opening homepage…")
         page.goto("https://www.corepoweryoga.com/", timeout=60000)
 
-        # Close potential popups (cookie, marketing, etc.)
-        try:
-            page.locator("button:has-text('Close')").first.click(timeout=3000)
-            print("💨 Closed popup via button:has-text('Close')")
-        except:
-            pass
+        # Close potential popups
+        for selector in ["button:has-text('Close')", "button[aria-label*='close' i]"]:
+            try:
+                page.locator(selector).first.click(timeout=3000)
+                print(f"💨 Closed popup via {selector}")
+            except:
+                pass
 
+        # Login flow (always runs daily)
         try:
-            page.locator("button[aria-label*='close' i]").first.click(timeout=3000)
-            print("💨 Closed popup via button[aria-label*='close' i]")
-        except:
-            pass
-
-        # --- Corrected order: Profile icon -> dropdown Sign In -> credentials ---
-        # 1) Click the profile icon (keep existing logic; add a safe attempt for the icon itself)
-        clicked_profile_icon = False
-        try:
-            # Common profile icon containers sometimes expose the dropdown trigger first
-            # Attempt a likely profile icon; if not present, we continue to the known Sign In button flow.
             page.locator("button[data-position='profile.1']").first.click(timeout=3000)
-            clicked_profile_icon = True
-            print("✅ Clicked profile icon (button[data-position='profile.1']).")
+            print("✅ Clicked profile icon.")
         except:
-            print("ℹ️ Profile icon not found with data-position='profile.1'; proceeding to Sign In button if available.")
+            print("ℹ️ Profile icon not found; continuing…")
 
-        # 2) Click the Sign In button in the dropdown
         try:
             sign_in_btn = page.locator("button[data-position='profile.1-sign-in']").first
             sign_in_btn.wait_for(timeout=5000)
             sign_in_btn.click()
-            print("✅ Clicked 'Sign In' in profile dropdown (button[data-position='profile.1-sign-in']).")
+            print("✅ Clicked 'Sign In' in profile dropdown.")
         except:
             print("⚠️ Sign In button not visible; continuing…")
 
-        # 3) Fill credentials in the sign-in modal and submit
         try:
             page.locator("input#email").wait_for(timeout=8000)
             page.fill("input#email", "<YOUR_EMAIL>")
             page.fill("input#password", "<YOUR_PASSWORD>")
             page.locator("button:has-text('Sign In')").click()
-            print("✅ Submitted credentials in modal.")
-        except:
-            print("⚠️ Could not locate sign-in modal fields; continuing…")
+            print("✅ Submitted credentials.")
+        except Exception as e:
+            print(f"⚠️ Could not locate sign-in modal fields: {e}")
 
-        # Give the session a beat to settle post-login
         page.wait_for_timeout(4000)
 
-        # --- PATCH: modal interception handling right before “Book a class” click ---
+        # --- Modal intercept patch ---
         try:
             modal_close_selectors = [
                 "button:has-text('Close')",
@@ -86,31 +69,33 @@ def main():
         except Exception as e:
             print(f"⚠️ No modal to close or error while closing modal: {e}")
 
-        # Click "Book a class"
-        try:
-            page.locator("button[data-position='book-a-class']").click(timeout=5000)
-            print("✅ Clicked visible 'Book a class'.")
-        except Exception as e:
-            print(f"❌ Failed to click 'Book a class': {e}")
-            browser.close()
-            return
+        # --- Conditional booking step ---
+        if should_book:
+            print("🧘 Booking window is open — proceeding to book class.")
+            try:
+                page.locator("button[data-position='book-a-class']").click(timeout=5000)
+                print("✅ Clicked 'Book a class'.")
+            except Exception as e:
+                print(f"❌ Failed to click 'Book a class': {e}")
+                browser.close()
+                return
 
-        # Select target date on calendar
-        date_str = str(target_date.day)
-        try:
-            page.locator(f"text={date_str}").first.click()
-            print(f"✅ Clicked calendar date {date_str} ({weekday[:3]}).")
-        except:
-            print(f"⚠️ Could not select date {date_str}.")
+            date_str = str(target_date.day)
+            try:
+                page.locator(f"text={date_str}").first.click()
+                print(f"✅ Clicked calendar date {date_str} ({weekday[:3]}).")
+            except:
+                print(f"⚠️ Could not select date {date_str}.")
 
-        # Scroll to 6:15 PM Yoga Sculpt at Flatiron (visual assist; selectors preserved from MVP style)
-        try:
-            page.evaluate("window.scrollBy(0, 500)")
-            print("✅ Scrolled to 6:15 PM Yoga Sculpt (Flatiron).")
-        except:
-            print("⚠️ Scroll failed or unnecessary.")
+            try:
+                page.evaluate("window.scrollBy(0, 500)")
+                print("✅ Scrolled to 6:15 PM Yoga Sculpt (Flatiron).")
+            except:
+                print("⚠️ Scroll failed or unnecessary.")
+        else:
+            print(f"📆 {weekday} is not a booking target — login validated, skipping booking step.")
 
-        print("🎯 Booking flow reached target phase successfully.")
+        print("🎯 Flow completed successfully.")
         browser.close()
 
 if __name__ == "__main__":
