@@ -37,10 +37,12 @@ def main():
             # --- Step 1: Click the Profile Icon ---
             try:
                 profile_candidates = [
+                    ".profile-icon-container",  # Desktop version - the clickable div
+                    "div.profile-container img[alt='Profile Icon']",  # The image itself
+                    "div.profile-container",  # Parent container
+                    "img[src*='profile_icon.svg']",  # By image source
+                    "div.cursor-pointer:has(img[alt='Profile Icon'])",  # Mobile version
                     "button[aria-label*='profile' i]",
-                    "button svg[aria-hidden='true'] >> xpath=ancestor::button[1]",
-                    "button:has(img[src*='profile_icon.svg'])",
-                    "button[data-position='profile.1']"
                 ]
                 found = False
                 for sel in profile_candidates:
@@ -74,10 +76,37 @@ def main():
 
             # --- Step 3: Fill credentials ---
             try:
-                page.locator("input#email").wait_for(timeout=8000)
-                page.fill("input#email", os.getenv("COREPOWER_EMAIL"))
-                page.fill("input#password", os.getenv("COREPOWER_PASSWORD"))
-                page.locator("button:has-text('Sign In')").click()
+                # Try to find the login form - wait for the form to appear
+                page.wait_for_timeout(2000)  # Give dropdown time to expand and show sign-in form
+                
+                # Find username field with multiple fallbacks
+                email_selectors = ["input[name='username']", "input#email", "input[type='email']", "input[placeholder*='email' i]"]
+                email_field = None
+                for sel in email_selectors:
+                    try:
+                        email_field = page.locator(sel).first
+                        if email_field.is_visible(timeout=2000):
+                            email_field.fill(os.getenv("COREPOWER_EMAIL"))
+                            print(f"✅ Filled email with selector: {sel}")
+                            break
+                    except:
+                        continue
+                
+                # Find password field
+                password_selectors = ["input[name='password']", "input#password", "input[type='password']"]
+                for sel in password_selectors:
+                    try:
+                        password_field = page.locator(sel).first
+                        if password_field.is_visible(timeout=1000):
+                            password_field.fill(os.getenv("COREPOWER_PASSWORD"))
+                            print(f"✅ Filled password with selector: {sel}")
+                            break
+                    except:
+                        continue
+                
+                # Click the form's submit button (not the dropdown button)
+                submit_btn = page.locator("form button[type='submit']:has-text('Sign In'), form button:has-text('Sign In')").first
+                submit_btn.click()
                 print("✅ Submitted credentials.")
             except Exception as e:
                 print(f"❌ Could not submit credentials: {e}")

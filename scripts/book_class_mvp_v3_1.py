@@ -18,17 +18,36 @@ def book_class():
         print("🏠 Opening homepage…")
         page.goto("https://www.corepoweryoga.com", wait_until="load")
 
-        # Click profile icon
-        page.locator("button[aria-label*='profile' i]").click()
-        print("✅ Clicked profile icon.")
+        # Click profile icon (target the actual div, not a button)
+        profile_selectors = [
+            ".profile-icon-container",  # Desktop version
+            "div.profile-container img[alt='Profile Icon']",  # The image itself
+            "div.profile-container",  # Parent container
+            "img[src*='profile_icon.svg']",  # By image source
+        ]
+        profile_clicked = False
+        for sel in profile_selectors:
+            if page.locator(sel).count() > 0 and page.locator(sel).is_visible():
+                page.locator(sel).click()
+                print(f"✅ Clicked profile icon via selector: {sel}")
+                profile_clicked = True
+                break
+        
+        if not profile_clicked:
+            print("❌ Could not find profile icon")
+            return
 
         # Wait for dropdown to expand (explicitly)
         try:
             page.wait_for_selector("button[data-position='profile.1-sign-in']", state="visible", timeout=5000)
         except PlaywrightTimeout:
             print("⚠️ Sign In still hidden — forcing second click and recheck")
-            page.locator("button[aria-label*='profile' i]").click()
-            page.wait_for_timeout(1000)
+            # Try clicking again with fallback
+            for sel in profile_selectors:
+                if page.locator(sel).count() > 0:
+                    page.locator(sel).click()
+                    page.wait_for_timeout(1000)
+                    break
 
         # Click Sign In
         page.locator("button[data-position='profile.1-sign-in']").click()
