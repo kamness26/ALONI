@@ -135,11 +135,39 @@ def main():
                 print("🧘 Booking window open — proceeding.")
                 page.locator("button[data-position='book-a-class']").click(timeout=5000)
                 print("✅ Clicked 'Book a class'.")
+                
+                # Wait for calendar to load
+                page.wait_for_timeout(2000)
+                
+                # Click the date
                 date_str = str(target_date.day)
                 page.locator(f"text={date_str}").first.click()
                 print(f"✅ Clicked calendar date {date_str} ({weekday[:3]}).")
-                page.evaluate("window.scrollBy(0, 500)")
-                print("✅ Scrolled to 6:15 PM Yoga Sculpt (Flatiron).")
+                
+                # Wait for class list to load
+                page.wait_for_timeout(3000)
+                
+                # Scroll to find the specific class (Flatiron 6:15 PM)
+                print("💫 Scrolling class list to find Flatiron 6:15 PM...")
+                for _ in range(15):
+                    page.mouse.wheel(0, 500)
+                    time.sleep(0.4)
+                    if page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").count() > 0:
+                        print("✅ Found Flatiron 6:15 PM class")
+                        break
+                
+                # Click the class session
+                try:
+                    session = page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").last
+                    session.scroll_into_view_if_needed()
+                    session.click()
+                    print("✅ Clicked Flatiron 6:15 PM session.")
+                    
+                    # Wait for booking confirmation
+                    page.wait_for_timeout(3000)
+                    print("🎉 Booking completed!")
+                except Exception as e:
+                    print(f"⚠️ Could not find or click the class: {e}")
             else:
                 print(f"📆 {weekday} is not a booking target — skipping booking.")
 
