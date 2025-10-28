@@ -133,41 +133,104 @@ def main():
             # --- Conditional booking ---
             if should_book:
                 print("🧘 Booking window open — proceeding.")
-                page.locator("div.profile-container button[data-position='book-a-class'], button.btn-primary[data-position='book-a-class']").first.click(timeout=5000)
-                print("✅ Clicked 'Book a class'.")
-                
-                # Wait for calendar to load
-                page.wait_for_timeout(2000)
-                
-                # Click the date
-                date_str = str(target_date.day)
-                page.locator(f"text={date_str}").first.click()
-                print(f"✅ Clicked calendar date {date_str} ({weekday[:3]}).")
-                
-                # Wait for class list to load
-                page.wait_for_timeout(3000)
-                
-                # Scroll to find the specific class (Flatiron 6:15 PM)
-                print("💫 Scrolling class list to find Flatiron 6:15 PM...")
-                for _ in range(15):
-                    page.mouse.wheel(0, 500)
-                    time.sleep(0.4)
-                    if page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").count() > 0:
-                        print("✅ Found Flatiron 6:15 PM class")
-                        break
-                
-                # Click the class session
+
+                # Click “Book a class”
                 try:
-                    session = page.locator("div.session-row-view:has-text('6:15 pm'):has-text('Flatiron')").last
-                    session.scroll_into_view_if_needed()
-                    session.click()
-                    print("✅ Clicked Flatiron 6:15 PM session.")
-                    
-                    # Wait for booking confirmation
-                    page.wait_for_timeout(3000)
-                    print("🎉 Booking completed!")
+                    book_btn = page.locator("button[data-position='book-a-class']").last
+                    book_btn.wait_for(state="visible", timeout=10000)
+                    book_btn.click()
+                    print("✅ Clicked visible 'Book a class'.")
                 except Exception as e:
-                    print(f"⚠️ Could not find or click the class: {e}")
+                    print(f"⚠️ Could not click Book a class: {e}")
+
+                # Wait for schedule to load
+                page.wait_for_timeout(5000)
+
+                # Select target date
+                try:
+                    day_num = str(target_date.day)
+                    day_locator = page.locator(f"div.cal-date:has-text('{day_num}')").last
+                    day_locator.scroll_into_view_if_needed()
+                    day_locator.click()
+                    print(f"✅ Clicked calendar date {day_num} ({target_date.strftime('%a')}).")
+                except Exception as e:
+                    print(f"⚠️ Could not select date {target_date.strftime('%a %b %d')}: {e}")
+
+                # Wait for schedule to render (first rows visible)
+                try:
+                    page.locator("div.session-row-view").first.wait_for(state="visible", timeout=10000)
+                except Exception:
+                    print("⚠️ Class list did not render within 10s — continuing with scroll search.")
+
+                # Find and click 6:15pm Flatiron class
+                try:
+                    # Support both 'pm' and 'PM' capitalization
+                    time_selector = "div.session-row-view:has-text('6:15 pm'), div.session-row-view:has-text('6:15 PM')"
+                    target_selector = f"{time_selector}:has-text('Flatiron')"
+
+                    # Actively scroll until the target appears or attempts exhausted
+                    found = False
+                    for _ in range(20):
+                        if page.locator(target_selector).count() > 0:
+                            found = True
+                            break
+                        # Try page wheel scroll
+                        page.mouse.wheel(0, 800)
+                        time.sleep(0.35)
+                        # Also try scrolling to bottom via JS to trigger lazy loading
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        time.sleep(0.2)
+
+                    if not found:
+                        print("⚠️ Target class not visible after scrolling — capturing visible time slots for debug.")
+                        try:
+                            times = page.locator("div.session-row-view").all_inner_texts()[:10]
+                            print(f"🧪 Sample visible rows (first 10): {times}")
+                        except Exception:
+                            pass
+                        # One last attempt: remove Flatiron filter in case of studio name change
+                        if page.locator(time_selector).count() == 0:
+                            raise Exception("6:15 time slot not found on page")
+
+                    class_row = page.locator(target_selector).last if page.locator(target_selector).count() > 0 else page.locator(time_selector).last
+                    class_row.scroll_into_view_if_needed()
+                    print("✅ Scrolled to 6:15 class row.")
+
+                    # BOOK button - try multiple fallbacks
+                    book_button = (
+                        class_row.locator("div.btn-text:has-text('BOOK')").last
+                        or class_row.locator("button:has-text('BOOK')").last
+                        or class_row.locator("button:has-text('Book')").last
+                    )
+
+                    # Ensure BOOK is visible and clickable
+                    try:
+                        book_button.wait_for(state="visible", timeout=8000)
+                    except Exception:
+                        print("⚠️ BOOK button not visible; forcing click on row as fallback.")
+                        class_row.click()
+                        book_button = class_row.locator("button:has-text('Book')").last
+                    book_button.scroll_into_view_if_needed()
+                    page.wait_for_timeout(1000)
+                    if book_button.is_enabled():
+                        book_button.click()
+                        print("✅ Clicked BOOK button.")
+                    else:
+                        print("⚠️ BOOK disabled — retry after short wait, then force.")
+                        page.wait_for_timeout(2000)
+                        book_button.click(force=True)
+
+                    # Verify success by checking popup
+                    page.wait_for_timeout(3000)
+                    if page.locator("button:has-text(\"I'm done\")").is_visible():
+                        print("🎉 Booking confirmed — confirmation popup detected.")
+                        page.locator("button:has-text(\"I'm done\")").click()
+                        print("💨 Closed confirmation popup.")
+                    else:
+                        print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
+
+                except Exception as e:
+                    print(f"⚠️ Could not book class: {e}")
             else:
                 print(f"📆 {weekday} is not a booking target — skipping booking.")
 
