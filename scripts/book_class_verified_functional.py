@@ -1,6 +1,8 @@
 from playwright.sync_api import sync_playwright
 from datetime import datetime, timedelta
-import time, os
+import os
+import re
+import time
 
 def main():
     print("🚀 Starting ALONI 2.9.8 – Profile Icon Debug + Video + Trace…")
@@ -164,67 +166,80 @@ def main():
 
                 # Find and click 6:15pm Flatiron class
                 try:
-                    # Support both 'pm' and 'PM' capitalization
-                    time_selector = "div.session-row-view:has-text('6:15 pm'), div.session-row-view:has-text('6:15 PM')"
-                    target_selector = f"{time_selector}:has-text('Flatiron')"
+                    session_rows = page.locator("div.session-row-view")
+                    time_pattern = re.compile(r"6:15\s*(?:p\.?m\.?|pm)", re.IGNORECASE)
+                    studio_pattern = re.compile(r"Flatiron", re.IGNORECASE)
 
-                    # Actively scroll until the target appears or attempts exhausted
-                    found = False
-                    for _ in range(20):
-                        if page.locator(target_selector).count() > 0:
-                            found = True
-                            break
-                        # Try page wheel scroll
-                        page.mouse.wheel(0, 800)
-                        time.sleep(0.35)
-                        # Also try scrolling to bottom via JS to trigger lazy loading
-                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        time.sleep(0.2)
+                    def locate_matching_row():
+                        """Return a locator for the desired row, scrolling as needed."""
+                        for attempt in range(20):
+                            try:
+                                row_count = session_rows.count()
+                            except Exception:
+                                row_count = 0
 
-                    if not found:
-                        print("⚠️ Target class not visible after scrolling — capturing visible time slots for debug.")
+                            for index in range(row_count):
+                                row = session_rows.nth(index)
+                                try:
+                                    row_text = row.inner_text(timeout=1000)
+                                except Exception:
+                                    continue
+
+                                normalized_text = row_text.lower()
+                                if time_pattern.search(normalized_text) and studio_pattern.search(normalized_text):
+                                    return row
+
+                            # Scroll to reveal more rows before the next attempt
+                            page.mouse.wheel(0, 900)
+                            page.wait_for_timeout(300)
+                            page.keyboard.press("PageDown")
+                            page.wait_for_timeout(300)
+
+                        return None
+
+                    target_row = locate_matching_row()
+
+                    if target_row is None:
+                        print("⚠️ Target class not visible after exhaustive scroll — capturing sample rows.")
                         try:
-                            times = page.locator("div.session-row-view").all_inner_texts()[:10]
-                            print(f"🧪 Sample visible rows (first 10): {times}")
+                            sample_rows = session_rows.all_inner_texts()
+                            print(f"🧪 Available rows: {sample_rows}")
                         except Exception:
                             pass
-                        # One last attempt: remove Flatiron filter in case of studio name change
-                        if page.locator(time_selector).count() == 0:
+                        # Fall back to the first 6:15pm slot if Flatiron is missing (better than failing outright)
+                        fallback_rows = session_rows.filter(has_text=time_pattern)
+                        if fallback_rows.count() == 0:
                             raise Exception("6:15 time slot not found on page")
+                        target_row = fallback_rows.first
 
-                    class_row = page.locator(target_selector).last if page.locator(target_selector).count() > 0 else page.locator(time_selector).last
-                    class_row.scroll_into_view_if_needed()
-                    print("✅ Scrolled to 6:15 class row.")
+                    target_row.scroll_into_view_if_needed()
+                    print("✅ Scrolled to target class row.")
 
-                    # BOOK button - try multiple fallbacks
-                    book_button = (
-                        class_row.locator("div.btn-text:has-text('BOOK')").last
-                        or class_row.locator("button:has-text('BOOK')").last
-                        or class_row.locator("button:has-text('Book')").last
-                    )
+                    # Locate BOOK button inside row using semantic role when possible
+                    book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
+                    if book_button.count() == 0:
+                        # Some layouts render BOOK as a div with button semantics; fall back to text match
+                        book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
 
-                    # Ensure BOOK is visible and clickable
-                    try:
-                        book_button.wait_for(state="visible", timeout=8000)
-                    except Exception:
-                        print("⚠️ BOOK button not visible; forcing click on row as fallback.")
-                        class_row.click()
-                        book_button = class_row.locator("button:has-text('Book')").last
+                    book_button.wait_for(state="visible", timeout=8000)
                     book_button.scroll_into_view_if_needed()
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(800)
+
                     if book_button.is_enabled():
                         book_button.click()
-                        print("✅ Clicked BOOK button.")
                     else:
-                        print("⚠️ BOOK disabled — retry after short wait, then force.")
-                        page.wait_for_timeout(2000)
+                        print("⚠️ BOOK button disabled — forcing click after short wait.")
+                        page.wait_for_timeout(1500)
                         book_button.click(force=True)
+
+                    print("✅ Clicked BOOK button.")
 
                     # Verify success by checking popup
                     page.wait_for_timeout(3000)
-                    if page.locator("button:has-text(\"I'm done\")").is_visible():
+                    done_button = page.locator("button:has-text(\"I'm done\")").first
+                    if done_button.is_visible():
                         print("🎉 Booking confirmed — confirmation popup detected.")
-                        page.locator("button:has-text(\"I'm done\")").click()
+                        done_button.click()
                         print("💨 Closed confirmation popup.")
                     else:
                         print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
