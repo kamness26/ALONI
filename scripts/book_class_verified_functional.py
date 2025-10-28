@@ -133,7 +133,7 @@ def main():
             # --- Conditional booking ---
             if should_book:
                 print("🧘 Booking window open — proceeding.")
-                page.locator("button[data-position='book-a-class']").click(timeout=5000)
+                page.locator("div.profile-container button[data-position='book-a-class'], button.btn-primary[data-position='book-a-class']").first.click(timeout=5000)
                 print("✅ Clicked 'Book a class'.")
                 
                 # Wait for calendar to load
