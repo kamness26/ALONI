@@ -161,11 +161,8 @@ def main():
                 try:
                     session_rows = page.locator("div.session-row-view")
 
-                    # Updated: Target 11:15 PM UTC (corresponds to 6:15 PM EST post-DST)
                     TARGET_CLASS_LOCAL = "11:15 PM"
                     print(f"🕒 Target time (UTC): {TARGET_CLASS_LOCAL}")
-
-                    studio_pattern = re.compile(r"Flatiron", re.IGNORECASE)
 
                     def locate_matching_row():
                         for attempt in range(20):
@@ -173,14 +170,12 @@ def main():
                                 row_count = session_rows.count()
                             except Exception:
                                 row_count = 0
-
                             for index in range(row_count):
                                 row = session_rows.nth(index)
                                 try:
                                     row_text = row.inner_text(timeout=1000)
                                 except Exception:
                                     continue
-
                                 normalized = row_text.lower()
                                 if (
                                     ("ys - yoga sculpt" in normalized)
@@ -188,7 +183,6 @@ def main():
                                     and (TARGET_CLASS_LOCAL.lower() in normalized)
                                 ):
                                     return row
-
                             page.mouse.wheel(0, 900)
                             page.wait_for_timeout(300)
                             page.keyboard.press("PageDown")
@@ -209,6 +203,7 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
+                    # --- UPDATED BOOK BUTTON INTERACTION ---
                     book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
                     if book_button.count() == 0:
                         book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
@@ -218,14 +213,17 @@ def main():
                     page.wait_for_timeout(800)
 
                     if book_button.is_enabled():
-                        book_button.click()
+                        box = book_button.bounding_box()
+                        if box:
+                            page.mouse.move(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                            page.mouse.click(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                            print("✅ Physically clicked BOOK button via mouse event.")
                     else:
                         print("⚠️ BOOK button disabled — forcing click after short wait.")
                         page.wait_for_timeout(1500)
                         book_button.click(force=True)
 
-                    print("✅ Clicked BOOK button.")
-
+                    # Confirmation
                     page.wait_for_timeout(3000)
                     done_button = page.locator("button:has-text(\"I'm done\")").first
                     if done_button.is_visible():
