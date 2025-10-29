@@ -161,8 +161,8 @@ def main():
                 try:
                     session_rows = page.locator("div.session-row-view")
 
-                    # Updated: Target 11:16 PM UTC (corresponds to 6:16 PM EST post-DST)
-                    TARGET_CLASS_LOCAL = "11:16 PM"
+                    # Updated: Target 11:15 PM UTC (corresponds to 6:15 PM EST post-DST)
+                    TARGET_CLASS_LOCAL = "11:15 PM"
                     print(f"🕒 Target time (UTC): {TARGET_CLASS_LOCAL}")
 
                     studio_pattern = re.compile(r"Flatiron", re.IGNORECASE)
