@@ -157,18 +157,13 @@ def main():
                 except Exception:
                     print("⚠️ Class list did not render within 10s — continuing with scroll search.")
 
-                # --- Timezone-aware 6:15 pm Flatiron search ---
+                # --- Timezone-aware Flatiron search ---
                 try:
                     session_rows = page.locator("div.session-row-view")
 
-                    # Convert 6:15 pm EST → UTC (runner timezone)
-                    TARGET_CLASS_LOCAL = "6:15 PM"
-                    LOCAL_TZ_OFFSET = -5  # EST = UTC-5
-                    target_est = datetime.strptime(TARGET_CLASS_LOCAL, "%I:%M %p").replace(
-                        tzinfo=timezone(timedelta(hours=LOCAL_TZ_OFFSET))
-                    )
-                    target_utc = target_est.astimezone(timezone.utc).strftime("%-I:%M %p")
-                    print(f"🕒 Target time (EST): {TARGET_CLASS_LOCAL}  →  (UTC): {target_utc}")
+                    # Updated: Target 11:16 PM UTC (corresponds to 6:16 PM EST post-DST)
+                    TARGET_CLASS_LOCAL = "11:16 PM"
+                    print(f"🕒 Target time (UTC): {TARGET_CLASS_LOCAL}")
 
                     studio_pattern = re.compile(r"Flatiron", re.IGNORECASE)
 
@@ -190,7 +185,7 @@ def main():
                                 if (
                                     ("ys - yoga sculpt" in normalized)
                                     and ("flatiron" in normalized)
-                                    and (TARGET_CLASS_LOCAL.lower() in normalized or target_utc.lower() in normalized)
+                                    and (TARGET_CLASS_LOCAL.lower() in normalized)
                                 ):
                                     return row
 
@@ -209,7 +204,7 @@ def main():
                             print(f"🧪 Available rows: {sample_rows}")
                         except Exception:
                             pass
-                        raise Exception(f"{TARGET_CLASS_LOCAL} time slot not found (checked EST/UTC)")
+                        raise Exception(f"{TARGET_CLASS_LOCAL} time slot not found (UTC)")
 
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
