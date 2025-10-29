@@ -68,4 +68,191 @@ def main():
 
             # --- Step 2: Click Sign In in dropdown ---
             try:
-                sign_in_btn = page.locator("button[data-po]()
+                sign_in_btn = page.locator("button[data-position='profile.1-sign-in']").first
+                sign_in_btn.wait_for(timeout=8000)
+                sign_in_btn.click()
+                print("✅ Clicked 'Sign In' in profile dropdown.")
+            except Exception as e:
+                print(f"❌ Could not click 'Sign In' button: {e}")
+                return
+
+            # --- Step 3: Fill credentials ---
+            try:
+                page.wait_for_timeout(2000)
+                email_selectors = ["input[name='username']", "input#email", "input[type='email']", "input[placeholder*='email' i]"]
+                email_field = None
+                for sel in email_selectors:
+                    try:
+                        email_field = page.locator(sel).first
+                        if email_field.is_visible(timeout=2000):
+                            email_field.fill(os.getenv("COREPOWER_EMAIL"))
+                            print(f"✅ Filled email with selector: {sel}")
+                            break
+                    except:
+                        continue
+
+                password_selectors = ["input[name='password']", "input#password", "input[type='password']"]
+                for sel in password_selectors:
+                    try:
+                        password_field = page.locator(sel).first
+                        if password_field.is_visible(timeout=1000):
+                            password_field.fill(os.getenv("COREPOWER_PASSWORD"))
+                            print(f"✅ Filled password with selector: {sel}")
+                            break
+                    except:
+                        continue
+
+                submit_btn = page.locator("form button[type='submit']:has-text('Sign In'), form button:has-text('Sign In')").first
+                submit_btn.click()
+                print("✅ Submitted credentials.")
+            except Exception as e:
+                print(f"❌ Could not submit credentials: {e}")
+                return
+
+            page.wait_for_timeout(4000)
+
+            # --- Handle post-login modals ---
+            try:
+                for selector in [
+                    "button:has-text('Close')",
+                    "button[aria-label*='close' i]",
+                    "div.modal button.close",
+                    "button[aria-label='Dismiss']",
+                ]:
+                    loc = page.locator(selector).first
+                    if loc.is_visible():
+                        loc.click()
+                        print(f"💨 Closed modal via {selector}")
+                        time.sleep(1)
+            except Exception as e:
+                print(f"⚠️ No modal to close: {e}")
+
+            # --- Conditional booking ---
+            if should_book:
+                print("🧘 Booking window open — proceeding.")
+
+                # Click “Book a class”
+                try:
+                    book_btn = page.locator("button[data-position='book-a-class']").last
+                    book_btn.wait_for(state="visible", timeout=10000)
+                    book_btn.click()
+                    print("✅ Clicked visible 'Book a class'.")
+                except Exception as e:
+                    print(f"⚠️ Could not click Book a class: {e}")
+
+                page.wait_for_timeout(5000)
+
+                # Select target date
+                try:
+                    day_num = str(target_date.day)
+                    day_locator = page.locator(f"div.cal-date:has-text('{day_num}')").last
+                    day_locator.scroll_into_view_if_needed()
+                    day_locator.click()
+                    print(f"✅ Clicked calendar date {day_num} ({target_date.strftime('%a')}).")
+                except Exception as e:
+                    print(f"⚠️ Could not select date {target_date.strftime('%a %b %d')}: {e}")
+
+                try:
+                    page.locator("div.session-row-view").first.wait_for(state="visible", timeout=10000)
+                except Exception:
+                    print("⚠️ Class list did not render within 10s — continuing with scroll search.")
+
+                # --- Timezone-aware 6:15 pm Flatiron search ---
+                try:
+                    session_rows = page.locator("div.session-row-view")
+
+                    # Convert 6:15 pm EST → UTC (runner timezone)
+                    TARGET_CLASS_LOCAL = "6:15 PM"
+                    LOCAL_TZ_OFFSET = -5  # EST = UTC-5
+                    target_est = datetime.strptime(TARGET_CLASS_LOCAL, "%I:%M %p").replace(
+                        tzinfo=timezone(timedelta(hours=LOCAL_TZ_OFFSET))
+                    )
+                    target_utc = target_est.astimezone(timezone.utc).strftime("%-I:%M %p")
+                    print(f"🕒 Target time (EST): {TARGET_CLASS_LOCAL}  →  (UTC): {target_utc}")
+
+                    studio_pattern = re.compile(r"Flatiron", re.IGNORECASE)
+
+                    def locate_matching_row():
+                        for attempt in range(20):
+                            try:
+                                row_count = session_rows.count()
+                            except Exception:
+                                row_count = 0
+
+                            for index in range(row_count):
+                                row = session_rows.nth(index)
+                                try:
+                                    row_text = row.inner_text(timeout=1000)
+                                except Exception:
+                                    continue
+
+                                normalized = row_text.lower()
+                                if (
+                                    ("ys - yoga sculpt" in normalized)
+                                    and ("flatiron" in normalized)
+                                    and (TARGET_CLASS_LOCAL.lower() in normalized or target_utc.lower() in normalized)
+                                ):
+                                    return row
+
+                            page.mouse.wheel(0, 900)
+                            page.wait_for_timeout(300)
+                            page.keyboard.press("PageDown")
+                            page.wait_for_timeout(300)
+                        return None
+
+                    target_row = locate_matching_row()
+
+                    if target_row is None:
+                        print("⚠️ Target class not visible after exhaustive scroll — capturing sample rows.")
+                        try:
+                            sample_rows = session_rows.all_inner_texts()
+                            print(f"🧪 Available rows: {sample_rows}")
+                        except Exception:
+                            pass
+                        raise Exception(f"{TARGET_CLASS_LOCAL} time slot not found (checked EST/UTC)")
+
+                    target_row.scroll_into_view_if_needed()
+                    print("✅ Scrolled to target class row.")
+
+                    book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
+                    if book_button.count() == 0:
+                        book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
+
+                    book_button.wait_for(state="visible", timeout=8000)
+                    book_button.scroll_into_view_if_needed()
+                    page.wait_for_timeout(800)
+
+                    if book_button.is_enabled():
+                        book_button.click()
+                    else:
+                        print("⚠️ BOOK button disabled — forcing click after short wait.")
+                        page.wait_for_timeout(1500)
+                        book_button.click(force=True)
+
+                    print("✅ Clicked BOOK button.")
+
+                    page.wait_for_timeout(3000)
+                    done_button = page.locator("button:has-text(\"I'm done\")").first
+                    if done_button.is_visible():
+                        print("🎉 Booking confirmed — confirmation popup detected.")
+                        done_button.click()
+                        print("💨 Closed confirmation popup.")
+                    else:
+                        print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
+
+                except Exception as e:
+                    print(f"⚠️ Could not book class: {e}")
+            else:
+                print(f"📆 {weekday} is not a booking target — skipping booking.")
+
+            print("🎯 Flow completed successfully.")
+
+        finally:
+            print("💾 Saving trace and closing browser...")
+            context.tracing.stop(path="trace.zip")
+            context.close()
+            browser.close()
+            print("📸 Artifacts saved to videos/ and trace.zip")
+
+if __name__ == "__main__":
+    main()
