@@ -201,40 +201,119 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                   # --- UPDATED BOOK BUTTON INTERACTION ---
-                    book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
+                  # --- UPDATED BOOK BUTTON INTERACTION (robust for <div> BOOK button) ---
+                    book_button = target_row.locator("div.session-card_sessionCardBtn__FQT3Z").first
                     if book_button.count() == 0:
-                        book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
+                        # Fallbacks by text and class combo
+                        book_button = target_row.locator("div.btn-outline-black.session-card_sessionCardBtn__FQT3Z").first
+                    if book_button.count() == 0:
+                        book_button = target_row.locator("div:has(.btn-text:has-text('BOOK'))").first
                     
                     book_button.wait_for(state="visible", timeout=8000)
                     book_button.scroll_into_view_if_needed()
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(400)  # small settle
                     
-                    if book_button.is_enabled():
-                        # 🔥 Simulate a real physical click for React compatibility
-                        box = book_button.bounding_box()
-                        if box:
-                            x = box["x"] + box["width"] / 2
-                            y = box["y"] + box["height"] / 2
-                            book_button.hover()
-                            page.mouse.move(x, y)
-                            page.mouse.down()
-                            page.mouse.up()
-                            print("✅ Simulated physical click on BOOK button (mouse down/up).")
-                        else:
-                            print("⚠️ Could not retrieve bounding box — using fallback JS click.")
-                            book_button.evaluate("el => el.click()")
+                    def confirm_popup_found() -> bool:
+                        return (
+                            page.locator("button:has-text(\"I'm done\")").first.is_visible(timeout=1000)
+                            or page.locator("text=Added to your schedule").first.is_visible(timeout=1000)
+                            or page.locator("text=Reservation successful").first.is_visible(timeout=1000)
+                        )
+                    
+                    clicked = False
+                    for attempt in range(1, 6):
+                        try:
+                            # 1) Normal click on the outer div
+                            book_button.click(timeout=1500)
+                            page.wait_for_timeout(500)
+                            if confirm_popup_found():
+                                print(f"✅ BOOK clicked (normal) on attempt #{attempt}.")
+                                clicked = True
+                                break
+                        except Exception as e:
+                            print(f"ℹ️ Normal click failed attempt #{attempt}: {e}")
+                    
+                        try:
+                            # 2) Force click
+                            book_button.click(timeout=1500, force=True)
+                            page.wait_for_timeout(500)
+                            if confirm_popup_found():
+                                print(f"✅ BOOK clicked (force) on attempt #{attempt}.")
+                                clicked = True
+                                break
+                        except Exception as e:
+                            print(f"ℹ️ Force click failed attempt #{attempt}: {e}")
+                    
+                        try:
+                            # 3) Click inner text node if present
+                            inner = book_button.locator(".btn-text", has_text=re.compile(r"^\s*BOOK\s*$", re.I)).first
+                            if inner.count() > 0 and inner.is_visible():
+                                inner.click(timeout=1500, force=True)
+                                page.wait_for_timeout(500)
+                                if confirm_popup_found():
+                                    print(f"✅ BOOK clicked via inner .btn-text on attempt #{attempt}.")
+                                    clicked = True
+                                    break
+                        except Exception as e:
+                            print(f"ℹ️ Inner .btn-text click failed attempt #{attempt}: {e}")
+                    
+                        try:
+                            # 4) Simulated physical click at element center
+                            box = book_button.bounding_box()
+                            if box:
+                                cx = box["x"] + box["width"] / 2
+                                cy = box["y"] + box["height"] / 2
+                                book_button.hover(timeout=1000)
+                                page.mouse.move(cx, cy)
+                                page.mouse.down()
+                                page.mouse.up()
+                                page.wait_for_timeout(500)
+                                if confirm_popup_found():
+                                    print(f"✅ BOOK clicked via mouse down/up at center on attempt #{attempt}.")
+                                    clicked = True
+                                    break
+                            else:
+                                print("⚠️ No bounding box available; skipping mouse click path.")
+                        except Exception as e:
+                            print(f"ℹ️ Mouse down/up click failed attempt #{attempt}: {e}")
+                    
+                        try:
+                            # 5) Full React-friendly event dispatch sequence
+                            book_button.evaluate("""
+                                el => {
+                                    const mk = (type) => new MouseEvent(type, {bubbles: true, cancelable: true, view: window, buttons: 1});
+                                    const pk = (type) => new PointerEvent(type, {bubbles: true, cancelable: true, pointerType: 'mouse', isPrimary: true, buttons: 1});
+                                    el.dispatchEvent(pk('pointerover'));
+                                    el.dispatchEvent(mk('mouseover'));
+                                    el.dispatchEvent(pk('pointerenter'));
+                                    el.dispatchEvent(mk('mouseenter'));
+                                    el.dispatchEvent(pk('pointerdown'));
+                                    el.dispatchEvent(mk('mousedown'));
+                                    el.dispatchEvent(pk('pointerup'));
+                                    el.dispatchEvent(mk('mouseup'));
+                                    el.dispatchEvent(mk('click'));
+                                }
+                            """)
+                            page.wait_for_timeout(600)
+                            if confirm_popup_found():
+                                print(f"✅ BOOK clicked via event dispatch on attempt #{attempt}.")
+                                clicked = True
+                                break
+                        except Exception as e:
+                            print(f"ℹ️ Event dispatch failed attempt #{attempt}: {e}")
+                    
+                    if not clicked:
+                        print("⚠️ BOOK click attempts exhausted — no confirmation detected.")
                     else:
-                        print("⚠️ BOOK button found but disabled — forcing dispatch.")
-                        book_button.evaluate("el => el.click()")
+                        # Close confirmation if present
+                        try:
+                            done_btn = page.locator("button:has-text(\"I'm done\")").first
+                            if done_btn.is_visible():
+                                done_btn.click()
+                                print("💨 Closed confirmation popup.")
+                        except Exception:
+                            pass
 
-
-                    # Verify confirmation popup
-                    page.wait_for_timeout(3000)
-                    if page.locator("button:has-text(\"I'm done\")").is_visible():
-                        print("🎉 Booking confirmed — confirmation popup detected.")
-                        page.locator("button:has-text(\"I'm done\")").click()
-                        print("💨 Closed confirmation popup.")
                     else:
                         print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
 
