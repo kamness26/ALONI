@@ -212,8 +212,19 @@ def main():
 
                     if book_button.is_enabled():
                         # 🔥 Dispatch JS-level click for React compatibility
-                        book_button.evaluate("el => el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))")
-                        print("✅ Dispatched BOOK click event via JS.")
+                        box = book_button.bounding_box()
+                    if box:
+                        x = box["x"] + box["width"] / 2
+                        y = box["y"] + box["height"] / 2
+                        book_button.hover()
+                        page.mouse.move(x, y)
+                        page.mouse.down()
+                        page.mouse.up()
+                        print("✅ Simulated physical click on BOOK button (mouse down/up).")
+                    else:
+                        print("⚠️ Could not retrieve bounding box — using fallback JS click.")
+                        book_button.evaluate("el => el.click()")
+
                     else:
                         print("⚠️ BOOK button found but disabled — forcing dispatch.")
                         book_button.evaluate("el => el.click()")
