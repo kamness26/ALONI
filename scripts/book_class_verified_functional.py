@@ -215,6 +215,7 @@ def main():
                 book_button.evaluate("el => el.click()")
             
             # Verify confirmation popup
+            
             page.wait_for_timeout(3000)
             if page.locator("button:has-text(\"I'm done\")").is_visible():
                 print("🎉 Booking confirmed — confirmation popup detected.")
@@ -224,13 +225,13 @@ def main():
                 print("⚠️ Booking click registered but no confirmation popup found (may not have booked).")
 
 
-                except Exception as e:
+            except Exception as e:
                     print(f"⚠️ Could not book class: {e}")
 
             else:
                 print(f"📆 {weekday} is not a booking target — skipping booking.")
 
-            print("🎯 Flow completed successfully.")
+                print("🎯 Flow completed successfully.")
 
         finally:
             print("💾 Saving trace and closing browser...")
