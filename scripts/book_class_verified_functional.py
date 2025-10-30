@@ -200,9 +200,6 @@ def main():
 
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
-            
-                               target_row.scroll_into_view_if_needed()
-                    print("✅ Scrolled to target class row.")
 
                     # --- UPDATED BOOK BUTTON INTERACTION ---
                     book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
@@ -228,16 +225,15 @@ def main():
                         page.locator("button:has-text(\"I'm done\")").click()
                         print("💨 Closed confirmation popup.")
                     else:
-                        print("⚠️ Booking click registered but no confirmation popup found (may not have booked).")
+                        print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
 
                 except Exception as e:
                     print(f"⚠️ Could not book class: {e}")
 
-
             else:
                 print(f"📆 {weekday} is not a booking target — skipping booking.")
 
-                print("🎯 Flow completed successfully.")
+            print("🎯 Flow completed successfully.")
 
         finally:
             print("💾 Saving trace and closing browser...")
