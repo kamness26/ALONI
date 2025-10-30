@@ -200,33 +200,39 @@ def main():
 
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
-            # --- UPDATED BOOK BUTTON INTERACTION ---
             
-            book_button.wait_for(state="visible", timeout=8000)
-            book_button.scroll_into_view_if_needed()
-            page.wait_for_timeout(1000)
-            
-            if book_button.is_enabled():
-                # 🔥 Dispatch JS-level click for React compatibility
-                book_button.evaluate("el => el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))")
-                print("✅ Dispatched BOOK click event via JS.")
-            else:
-                print("⚠️ BOOK button found but disabled — forcing dispatch.")
-                book_button.evaluate("el => el.click()")
-            
-            # Verify confirmation popup
-            
-            page.wait_for_timeout(3000)
-            if page.locator("button:has-text(\"I'm done\")").is_visible():
-                print("🎉 Booking confirmed — confirmation popup detected.")
-                page.locator("button:has-text(\"I'm done\")").click()
-                print("💨 Closed confirmation popup.")
-            else:
-                print("⚠️ Booking click registered but no confirmation popup found (may not have booked).")
+                               target_row.scroll_into_view_if_needed()
+                    print("✅ Scrolled to target class row.")
 
+                    # --- UPDATED BOOK BUTTON INTERACTION ---
+                    book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
+                    if book_button.count() == 0:
+                        book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
 
-            except Exception as e:
+                    book_button.wait_for(state="visible", timeout=8000)
+                    book_button.scroll_into_view_if_needed()
+                    page.wait_for_timeout(1000)
+
+                    if book_button.is_enabled():
+                        # 🔥 Dispatch JS-level click for React compatibility
+                        book_button.evaluate("el => el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))")
+                        print("✅ Dispatched BOOK click event via JS.")
+                    else:
+                        print("⚠️ BOOK button found but disabled — forcing dispatch.")
+                        book_button.evaluate("el => el.click()")
+
+                    # Verify confirmation popup
+                    page.wait_for_timeout(3000)
+                    if page.locator("button:has-text(\"I'm done\")").is_visible():
+                        print("🎉 Booking confirmed — confirmation popup detected.")
+                        page.locator("button:has-text(\"I'm done\")").click()
+                        print("💨 Closed confirmation popup.")
+                    else:
+                        print("⚠️ Booking click registered but no confirmation popup found (may not have booked).")
+
+                except Exception as e:
                     print(f"⚠️ Could not book class: {e}")
+
 
             else:
                 print(f"📆 {weekday} is not a booking target — skipping booking.")
