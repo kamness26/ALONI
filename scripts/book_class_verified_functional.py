@@ -208,28 +208,24 @@ def main():
 
                     book_button.wait_for(state="visible", timeout=8000)
                     book_button.scroll_into_view_if_needed()
-                    page.wait_for_timeout(800)
+                    page.wait_for_timeout(1000)
 
                     if book_button.is_enabled():
-                        box = book_button.bounding_box()
-                        if box:
-                            page.mouse.move(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                            page.mouse.click(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                            print("✅ Physically clicked BOOK button via mouse event.")
-                        else:
-                            print("⚠️ BOOK button disabled — forcing click after short wait.")
-                            page.wait_for_timeout(1500)
-                            book_button.click(force=True)
+                        book_button.click()
+                        print("✅ Clicked BOOK button.")
+                    else:
+                        print("⚠️ BOOK button found but disabled — retrying after short wait.")
+                        page.wait_for_timeout(2000)
+                        book_button.click(force=True)
 
-                    # Confirmation
+                    # Verify success by checking popup
                     page.wait_for_timeout(3000)
-                    done_button = page.locator("button:has-text(\"I'm done\")").first
-                    if done_button.is_visible():
+                    if page.locator("button:has-text(\"I'm done\")").is_visible():
                         print("🎉 Booking confirmed — confirmation popup detected.")
-                        done_button.click()
+                        page.locator("button:has-text(\"I'm done\")").click()
                         print("💨 Closed confirmation popup.")
                     else:
-                        print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
+                        print("⚠️ Booking click registered but no confirmation popup found (may not have booked).")
 
                 except Exception as e:
                     print(f"⚠️ Could not book class: {e}")
