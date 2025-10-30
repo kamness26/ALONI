@@ -4,6 +4,7 @@ import os
 import re
 import time
 
+
 def main():
     print("🚀 Starting ALONI 2.9.8 – Profile Icon Debug + Video + Trace…")
 
@@ -79,7 +80,12 @@ def main():
             # --- Step 3: Fill credentials ---
             try:
                 page.wait_for_timeout(2000)
-                email_selectors = ["input[name='username']", "input#email", "input[type='email']", "input[placeholder*='email' i]"]
+                email_selectors = [
+                    "input[name='username']",
+                    "input#email",
+                    "input[type='email']",
+                    "input[placeholder*='email' i]"
+                ]
                 email_field = None
                 for sel in email_selectors:
                     try:
@@ -91,7 +97,11 @@ def main():
                     except:
                         continue
 
-                password_selectors = ["input[name='password']", "input#password", "input[type='password']"]
+                password_selectors = [
+                    "input[name='password']",
+                    "input#password",
+                    "input[type='password']"
+                ]
                 for sel in password_selectors:
                     try:
                         password_field = page.locator(sel).first
@@ -102,7 +112,9 @@ def main():
                     except:
                         continue
 
-                submit_btn = page.locator("form button[type='submit']:has-text('Sign In'), form button:has-text('Sign In')").first
+                submit_btn = page.locator(
+                    "form button[type='submit']:has-text('Sign In'), form button:has-text('Sign In')"
+                ).first
                 submit_btn.click()
                 print("✅ Submitted credentials.")
             except Exception as e:
@@ -201,25 +213,29 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                  # --- UPDATED BOOK BUTTON INTERACTION (robust for <div> BOOK button) ---
+                    # --- UPDATED BOOK BUTTON INTERACTION (robust for <div> BOOK button) ---
                     book_button = target_row.locator("div.session-card_sessionCardBtn__FQT3Z").first
                     if book_button.count() == 0:
                         # Fallbacks by text and class combo
-                        book_button = target_row.locator("div.btn-outline-black.session-card_sessionCardBtn__FQT3Z").first
+                        book_button = target_row.locator(
+                            "div.btn-outline-black.session-card_sessionCardBtn__FQT3Z"
+                        ).first
                     if book_button.count() == 0:
-                        book_button = target_row.locator("div:has(.btn-text:has-text('BOOK'))").first
-                    
+                        book_button = target_row.locator(
+                            "div:has(.btn-text:has-text('BOOK'))"
+                        ).first
+
                     book_button.wait_for(state="visible", timeout=8000)
                     book_button.scroll_into_view_if_needed()
                     page.wait_for_timeout(400)  # small settle
-                    
+
                     def confirm_popup_found() -> bool:
                         return (
                             page.locator("button:has-text(\"I'm done\")").first.is_visible(timeout=1000)
                             or page.locator("text=Added to your schedule").first.is_visible(timeout=1000)
                             or page.locator("text=Reservation successful").first.is_visible(timeout=1000)
                         )
-                    
+
                     clicked = False
                     for attempt in range(1, 6):
                         try:
@@ -232,7 +248,7 @@ def main():
                                 break
                         except Exception as e:
                             print(f"ℹ️ Normal click failed attempt #{attempt}: {e}")
-                    
+
                         try:
                             # 2) Force click
                             book_button.click(timeout=1500, force=True)
@@ -243,10 +259,12 @@ def main():
                                 break
                         except Exception as e:
                             print(f"ℹ️ Force click failed attempt #{attempt}: {e}")
-                    
+
                         try:
                             # 3) Click inner text node if present
-                            inner = book_button.locator(".btn-text", has_text=re.compile(r"^\s*BOOK\s*$", re.I)).first
+                            inner = book_button.locator(
+                                ".btn-text", has_text=re.compile(r"^\s*BOOK\s*$", re.I)
+                            ).first
                             if inner.count() > 0 and inner.is_visible():
                                 inner.click(timeout=1500, force=True)
                                 page.wait_for_timeout(500)
@@ -256,7 +274,7 @@ def main():
                                     break
                         except Exception as e:
                             print(f"ℹ️ Inner .btn-text click failed attempt #{attempt}: {e}")
-                    
+
                         try:
                             # 4) Simulated physical click at element center
                             box = book_button.bounding_box()
@@ -276,7 +294,7 @@ def main():
                                 print("⚠️ No bounding box available; skipping mouse click path.")
                         except Exception as e:
                             print(f"ℹ️ Mouse down/up click failed attempt #{attempt}: {e}")
-                    
+
                         try:
                             # 5) Full React-friendly event dispatch sequence
                             book_button.evaluate("""
@@ -301,7 +319,7 @@ def main():
                                 break
                         except Exception as e:
                             print(f"ℹ️ Event dispatch failed attempt #{attempt}: {e}")
-                    
+
                     if not clicked:
                         print("⚠️ BOOK click attempts exhausted — no confirmation detected.")
                     else:
@@ -314,23 +332,21 @@ def main():
                         except Exception:
                             pass
 
-                    else:
-                        print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
-        
-                        except Exception as e:
-                            print(f"⚠️ Could not book class: {e}")
-        
-                    else:
-                        print(f"📆 {weekday} is not a booking target — skipping booking.")
-        
-                    print("🎯 Flow completed successfully.")
-        
-                finally:
-                    print("💾 Saving trace and closing browser...")
-                    context.tracing.stop(path="trace.zip")
-                    context.close()
-                    browser.close()
-                    print("📸 Artifacts saved to videos/ and trace.zip")
-        
-        if __name__ == "__main__":
-            main()
+                except Exception as e:
+                    print(f"⚠️ Could not book class: {e}")
+
+            else:
+                print(f"📆 {weekday} is not a booking target — skipping booking.")
+
+            print("🎯 Flow completed successfully.")
+
+        finally:
+            print("💾 Saving trace and closing browser...")
+            context.tracing.stop(path="trace.zip")
+            context.close()
+            browser.close()
+            print("📸 Artifacts saved to videos/ and trace.zip")
+
+
+if __name__ == "__main__":
+    main()
