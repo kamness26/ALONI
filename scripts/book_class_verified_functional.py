@@ -160,7 +160,6 @@ def main():
                 # --- Timezone-aware Flatiron search ---
                 try:
                     session_rows = page.locator("div.session-row-view")
-
                     TARGET_CLASS_LOCAL = "11:15 PM"
                     print(f"🕒 Target time (UTC): {TARGET_CLASS_LOCAL}")
 
@@ -190,7 +189,6 @@ def main():
                         return None
 
                     target_row = locate_matching_row()
-
                     if target_row is None:
                         print("⚠️ Target class not visible after exhaustive scroll — capturing sample rows.")
                         try:
@@ -203,21 +201,50 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    # --- MVP BOOK BUTTON LOGIC REINSERTED HERE ---
-                    book_button = target_row.locator("div.btn-text:has-text('BOOK')").last
-                    book_button.wait_for(state="visible", timeout=10000)
+                    # --- UPDATED BOOK BUTTON INTERACTION ---
+                    book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
+                    if book_button.count() == 0:
+                        book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
+
+                    book_button.wait_for(state="visible", timeout=8000)
                     book_button.scroll_into_view_if_needed()
+                    page.wait_for_timeout(800)
 
-                    # Ensure button is clickable
-                    page.wait_for_timeout(1000)
                     if book_button.is_enabled():
-                        book_button.click()
-                        print("✅ Clicked BOOK button.")
-                    else:
-                        print("⚠️ BOOK button found but disabled — retrying after short wait.")
-                        page.wait_for_timeout(2000)
-                        book_button.click(force=True)
+                        box = book_button.bounding_box()
+                        if box:
+                            page.mouse.move(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                            page.mouse.click(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                            print("✅ Physically clicked BOOK button via mouse event.")
+                        else:
+                            print("⚠️ BOOK button disabled — forcing click after short wait.")
+                            page.wait_for_timeout(1500)
+                            book_button.click(force=True)
 
-                    # Verify success by checking popup
+                    # Confirmation
                     page.wait_for_timeout(3000)
-                    if page.locator("button:has-text(\"I'm done\")").is_visible():
+                    done_button = page.locator("button:has-text(\"I'm done\")").first
+                    if done_button.is_visible():
+                        print("🎉 Booking confirmed — confirmation popup detected.")
+                        done_button.click()
+                        print("💨 Closed confirmation popup.")
+                    else:
+                        print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
+
+                except Exception as e:
+                    print(f"⚠️ Could not book class: {e}")
+
+            else:
+                print(f"📆 {weekday} is not a booking target — skipping booking.")
+
+            print("🎯 Flow completed successfully.")
+
+        finally:
+            print("💾 Saving trace and closing browser...")
+            context.tracing.stop(path="trace.zip")
+            context.close()
+            browser.close()
+            print("📸 Artifacts saved to videos/ and trace.zip")
+
+if __name__ == "__main__":
+    main()
