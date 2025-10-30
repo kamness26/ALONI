@@ -316,21 +316,21 @@ def main():
 
                     else:
                         print("⚠️ BOOK click registered but no confirmation popup found (may not have booked).")
-
-                except Exception as e:
-                    print(f"⚠️ Could not book class: {e}")
-
-            else:
-                print(f"📆 {weekday} is not a booking target — skipping booking.")
-
-            print("🎯 Flow completed successfully.")
-
-        finally:
-            print("💾 Saving trace and closing browser...")
-            context.tracing.stop(path="trace.zip")
-            context.close()
-            browser.close()
-            print("📸 Artifacts saved to videos/ and trace.zip")
-
-if __name__ == "__main__":
-    main()
+        
+                        except Exception as e:
+                            print(f"⚠️ Could not book class: {e}")
+        
+                    else:
+                        print(f"📆 {weekday} is not a booking target — skipping booking.")
+        
+                    print("🎯 Flow completed successfully.")
+        
+                finally:
+                    print("💾 Saving trace and closing browser...")
+                    context.tracing.stop(path="trace.zip")
+                    context.close()
+                    browser.close()
+                    print("📸 Artifacts saved to videos/ and trace.zip")
+        
+        if __name__ == "__main__":
+            main()
