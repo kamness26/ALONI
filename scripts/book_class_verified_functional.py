@@ -213,21 +213,28 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    # --- UPDATED BOOK BUTTON INTERACTION (robust for <div> BOOK button) ---
+                    # --- FINAL BOOK BUTTON INTERACTION (visibility override + direct DOM click) ---
                     book_button = target_row.locator("div.session-card_sessionCardBtn__FQT3Z").first
                     if book_button.count() == 0:
-                        # Fallbacks by text and class combo
-                        book_button = target_row.locator(
-                            "div.btn-outline-black.session-card_sessionCardBtn__FQT3Z"
-                        ).first
-                    if book_button.count() == 0:
-                        book_button = target_row.locator(
-                            "div:has(.btn-text:has-text('BOOK'))"
-                        ).first
+                        book_button = target_row.locator("div:has-text('BOOK')").first
 
-                    book_button.wait_for(state="visible", timeout=8000)
-                    book_button.scroll_into_view_if_needed()
-                    page.wait_for_timeout(400)  # small settle
+                    # Forcefully make the button visible via JS before clicking
+                    try:
+                        page.evaluate("""
+                            (btnSel) => {
+                                const el = document.querySelector(btnSel);
+                                if (el) {
+                                    el.style.display = 'block';
+                                    el.style.visibility = 'visible';
+                                    el.style.opacity = 1;
+                                    el.removeAttribute('disabled');
+                                }
+                            }
+                        """, "div.session-card_sessionCardBtn__FQT3Z")
+                    except Exception:
+                        pass
+
+                    page.wait_for_timeout(500)
 
                     def confirm_popup_found() -> bool:
                         return (
@@ -239,91 +246,50 @@ def main():
                     clicked = False
                     for attempt in range(1, 6):
                         try:
-                            # 1) Normal click on the outer div
-                            book_button.click(timeout=1500)
-                            page.wait_for_timeout(500)
+                            # 1️⃣ Direct DOM click bypassing visibility restriction
+                            book_button.evaluate("el => el.click()")
+                            page.wait_for_timeout(800)
                             if confirm_popup_found():
-                                print(f"✅ BOOK clicked (normal) on attempt #{attempt}.")
+                                print(f"✅ BOOK clicked via direct JS click on attempt #{attempt}.")
                                 clicked = True
                                 break
                         except Exception as e:
-                            print(f"ℹ️ Normal click failed attempt #{attempt}: {e}")
+                            print(f"⚠️ Direct click failed on attempt #{attempt}: {e}")
 
                         try:
-                            # 2) Force click
-                            book_button.click(timeout=1500, force=True)
-                            page.wait_for_timeout(500)
-                            if confirm_popup_found():
-                                print(f"✅ BOOK clicked (force) on attempt #{attempt}.")
-                                clicked = True
-                                break
-                        except Exception as e:
-                            print(f"ℹ️ Force click failed attempt #{attempt}: {e}")
-
-                        try:
-                            # 3) Click inner text node if present
-                            inner = book_button.locator(
-                                ".btn-text", has_text=re.compile(r"^\s*BOOK\s*$", re.I)
-                            ).first
-                            if inner.count() > 0 and inner.is_visible():
-                                inner.click(timeout=1500, force=True)
-                                page.wait_for_timeout(500)
-                                if confirm_popup_found():
-                                    print(f"✅ BOOK clicked via inner .btn-text on attempt #{attempt}.")
-                                    clicked = True
-                                    break
-                        except Exception as e:
-                            print(f"ℹ️ Inner .btn-text click failed attempt #{attempt}: {e}")
-
-                        try:
-                            # 4) Simulated physical click at element center
-                            box = book_button.bounding_box()
-                            if box:
-                                cx = box["x"] + box["width"] / 2
-                                cy = box["y"] + box["height"] / 2
-                                book_button.hover(timeout=1000)
-                                page.mouse.move(cx, cy)
-                                page.mouse.down()
-                                page.mouse.up()
-                                page.wait_for_timeout(500)
-                                if confirm_popup_found():
-                                    print(f"✅ BOOK clicked via mouse down/up at center on attempt #{attempt}.")
-                                    clicked = True
-                                    break
-                            else:
-                                print("⚠️ No bounding box available; skipping mouse click path.")
-                        except Exception as e:
-                            print(f"ℹ️ Mouse down/up click failed attempt #{attempt}: {e}")
-
-                        try:
-                            # 5) Full React-friendly event dispatch sequence
+                            # 2️⃣ Dispatch React-friendly event sequence
                             book_button.evaluate("""
                                 el => {
-                                    const mk = (type) => new MouseEvent(type, {bubbles: true, cancelable: true, view: window, buttons: 1});
-                                    const pk = (type) => new PointerEvent(type, {bubbles: true, cancelable: true, pointerType: 'mouse', isPrimary: true, buttons: 1});
-                                    el.dispatchEvent(pk('pointerover'));
-                                    el.dispatchEvent(mk('mouseover'));
-                                    el.dispatchEvent(pk('pointerenter'));
-                                    el.dispatchEvent(mk('mouseenter'));
-                                    el.dispatchEvent(pk('pointerdown'));
-                                    el.dispatchEvent(mk('mousedown'));
-                                    el.dispatchEvent(pk('pointerup'));
-                                    el.dispatchEvent(mk('mouseup'));
-                                    el.dispatchEvent(mk('click'));
+                                    const fire = (t) => el.dispatchEvent(new MouseEvent(t, {bubbles:true,cancelable:true,view:window}));
+                                    fire('mouseover'); fire('mousedown'); fire('mouseup'); fire('click');
                                 }
                             """)
-                            page.wait_for_timeout(600)
+                            page.wait_for_timeout(800)
                             if confirm_popup_found():
                                 print(f"✅ BOOK clicked via event dispatch on attempt #{attempt}.")
                                 clicked = True
                                 break
                         except Exception as e:
-                            print(f"ℹ️ Event dispatch failed attempt #{attempt}: {e}")
+                            print(f"⚠️ Event dispatch failed on attempt #{attempt}: {e}")
 
                     if not clicked:
-                        print("⚠️ BOOK click attempts exhausted — no confirmation detected.")
-                    else:
-                        # Close confirmation if present
+                        print("⚠️ BOOK button found but still not booking — forcing final fallback.")
+                        try:
+                            page.evaluate("""
+                                () => {
+                                    const btns = Array.from(document.querySelectorAll('.session-card_sessionCardBtn__FQT3Z'));
+                                    const target = btns.find(b => /book/i.test(b.innerText));
+                                    if (target) target.click();
+                                }
+                            """)
+                            page.wait_for_timeout(800)
+                            if confirm_popup_found():
+                                print("✅ BOOK clicked via fallback global DOM query.")
+                                clicked = True
+                        except Exception as e:
+                            print(f"⚠️ Fallback global click failed: {e}")
+
+                    if clicked:
                         try:
                             done_btn = page.locator("button:has-text(\"I'm done\")").first
                             if done_btn.is_visible():
@@ -331,6 +297,8 @@ def main():
                                 print("💨 Closed confirmation popup.")
                         except Exception:
                             pass
+                    else:
+                        print("❌ BOOK button click exhausted — still unresponsive.")
 
                 except Exception as e:
                     print(f"⚠️ Could not book class: {e}")
