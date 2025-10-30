@@ -201,33 +201,33 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    # --- UPDATED BOOK BUTTON INTERACTION ---
+                   # --- UPDATED BOOK BUTTON INTERACTION ---
                     book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
                     if book_button.count() == 0:
                         book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
-
+                    
                     book_button.wait_for(state="visible", timeout=8000)
                     book_button.scroll_into_view_if_needed()
                     page.wait_for_timeout(1000)
-
+                    
                     if book_button.is_enabled():
-                        # 🔥 Dispatch JS-level click for React compatibility
+                        # 🔥 Simulate a real physical click for React compatibility
                         box = book_button.bounding_box()
-                    if box:
-                        x = box["x"] + box["width"] / 2
-                        y = box["y"] + box["height"] / 2
-                        book_button.hover()
-                        page.mouse.move(x, y)
-                        page.mouse.down()
-                        page.mouse.up()
-                        print("✅ Simulated physical click on BOOK button (mouse down/up).")
-                    else:
-                        print("⚠️ Could not retrieve bounding box — using fallback JS click.")
-                        book_button.evaluate("el => el.click()")
-
+                        if box:
+                            x = box["x"] + box["width"] / 2
+                            y = box["y"] + box["height"] / 2
+                            book_button.hover()
+                            page.mouse.move(x, y)
+                            page.mouse.down()
+                            page.mouse.up()
+                            print("✅ Simulated physical click on BOOK button (mouse down/up).")
+                        else:
+                            print("⚠️ Could not retrieve bounding box — using fallback JS click.")
+                            book_button.evaluate("el => el.click()")
                     else:
                         print("⚠️ BOOK button found but disabled — forcing dispatch.")
                         book_button.evaluate("el => el.click()")
+
 
                     # Verify confirmation popup
                     page.wait_for_timeout(3000)
