@@ -1,5 +1,5 @@
 from playwright.sync_api import sync_playwright
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import re
 import time
@@ -39,11 +39,11 @@ def main():
             # --- Step 1: Click the Profile Icon ---
             try:
                 profile_candidates = [
-                    ".profile-icon-container",  # Desktop version - the clickable div
-                    "div.profile-container img[alt='Profile Icon']",  # The image itself
-                    "div.profile-container",  # Parent container
-                    "img[src*='profile_icon.svg']",  # By image source
-                    "div.cursor-pointer:has(img[alt='Profile Icon'])",  # Mobile version
+                    ".profile-icon-container",
+                    "div.profile-container img[alt='Profile Icon']",
+                    "div.profile-container",
+                    "img[src*='profile_icon.svg']",
+                    "div.cursor-pointer:has(img[alt='Profile Icon'])",
                     "button[aria-label*='profile' i]",
                 ]
                 found = False
@@ -78,10 +78,7 @@ def main():
 
             # --- Step 3: Fill credentials ---
             try:
-                # Try to find the login form - wait for the form to appear
-                page.wait_for_timeout(2000)  # Give dropdown time to expand and show sign-in form
-                
-                # Find username field with multiple fallbacks
+                page.wait_for_timeout(2000)
                 email_selectors = ["input[name='username']", "input#email", "input[type='email']", "input[placeholder*='email' i]"]
                 email_field = None
                 for sel in email_selectors:
@@ -93,8 +90,7 @@ def main():
                             break
                     except:
                         continue
-                
-                # Find password field
+
                 password_selectors = ["input[name='password']", "input#password", "input[type='password']"]
                 for sel in password_selectors:
                     try:
@@ -105,8 +101,7 @@ def main():
                             break
                     except:
                         continue
-                
-                # Click the form's submit button (not the dropdown button)
+
                 submit_btn = page.locator("form button[type='submit']:has-text('Sign In'), form button:has-text('Sign In')").first
                 submit_btn.click()
                 print("✅ Submitted credentials.")
@@ -145,7 +140,6 @@ def main():
                 except Exception as e:
                     print(f"⚠️ Could not click Book a class: {e}")
 
-                # Wait for schedule to load
                 page.wait_for_timeout(5000)
 
                 # Select target date
@@ -158,20 +152,22 @@ def main():
                 except Exception as e:
                     print(f"⚠️ Could not select date {target_date.strftime('%a %b %d')}: {e}")
 
-                # Wait for schedule to render (first rows visible)
                 try:
                     page.locator("div.session-row-view").first.wait_for(state="visible", timeout=10000)
                 except Exception:
                     print("⚠️ Class list did not render within 10s — continuing with scroll search.")
 
-                # Find and click 6:15pm Flatiron class
+                # --- Timezone-aware Flatiron search ---
                 try:
                     session_rows = page.locator("div.session-row-view")
-                    time_pattern = re.compile(r"6:15\s*(?:p\.?m\.?|pm)", re.IGNORECASE)
+
+                    # Updated: Target 11:16 PM UTC (corresponds to 6:16 PM EST post-DST)
+                    TARGET_CLASS_LOCAL = "11:16 PM"
+                    print(f"🕒 Target time (UTC): {TARGET_CLASS_LOCAL}")
+
                     studio_pattern = re.compile(r"Flatiron", re.IGNORECASE)
 
                     def locate_matching_row():
-                        """Return a locator for the desired row, scrolling as needed."""
                         for attempt in range(20):
                             try:
                                 row_count = session_rows.count()
@@ -185,16 +181,18 @@ def main():
                                 except Exception:
                                     continue
 
-                                normalized_text = row_text.lower()
-                                if time_pattern.search(normalized_text) and studio_pattern.search(normalized_text):
+                                normalized = row_text.lower()
+                                if (
+                                    ("ys - yoga sculpt" in normalized)
+                                    and ("flatiron" in normalized)
+                                    and (TARGET_CLASS_LOCAL.lower() in normalized)
+                                ):
                                     return row
 
-                            # Scroll to reveal more rows before the next attempt
                             page.mouse.wheel(0, 900)
                             page.wait_for_timeout(300)
                             page.keyboard.press("PageDown")
                             page.wait_for_timeout(300)
-
                         return None
 
                     target_row = locate_matching_row()
@@ -206,19 +204,13 @@ def main():
                             print(f"🧪 Available rows: {sample_rows}")
                         except Exception:
                             pass
-                        # Fall back to the first 6:15pm slot if Flatiron is missing (better than failing outright)
-                        fallback_rows = session_rows.filter(has_text=time_pattern)
-                        if fallback_rows.count() == 0:
-                            raise Exception("6:15 time slot not found on page")
-                        target_row = fallback_rows.first
+                        raise Exception(f"{TARGET_CLASS_LOCAL} time slot not found (UTC)")
 
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    # Locate BOOK button inside row using semantic role when possible
                     book_button = target_row.get_by_role("button", name=re.compile(r"book", re.IGNORECASE)).first
                     if book_button.count() == 0:
-                        # Some layouts render BOOK as a div with button semantics; fall back to text match
                         book_button = target_row.locator("div, button").filter(has_text=re.compile(r"book", re.IGNORECASE)).first
 
                     book_button.wait_for(state="visible", timeout=8000)
@@ -234,7 +226,6 @@ def main():
 
                     print("✅ Clicked BOOK button.")
 
-                    # Verify success by checking popup
                     page.wait_for_timeout(3000)
                     done_button = page.locator("button:has-text(\"I'm done\")").first
                     if done_button.is_visible():
