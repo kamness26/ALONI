@@ -7,7 +7,7 @@ import time
 
 
 def main():
-    print("🚀 Starting ALONI 2.9.9 – DumbLock + Click-Until-It-Sticks…")
+    print("🚀 Starting ALONI 2.9.10 – Re-click Stabilizer Patch…")
 
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
@@ -155,51 +155,21 @@ def main():
 
                 page.wait_for_timeout(5000)
 
-                # --- DUMB-LOCK: Loop until target date is visible ---
+                # Select target date
                 try:
                     day_num = str(target_date.day)
-                    print(f"🧠 DumbLock: Searching for calendar day {day_num}...")
-                    for attempt in range(10):
-                        if page.locator(f"div.cal-date:has-text('{day_num}')").count() > 0:
-                            print(f"✅ Found day {day_num} on attempt {attempt+1}")
-                            break
-                        else:
-                            print(f"↻ Day {day_num} not visible yet, clicking Next Week...")
-                            try:
-                                page.locator("button[aria-label*='Next Week' i], button:has-text('Next Week')").click()
-                            except:
-                                page.keyboard.press("ArrowRight")
-                            page.wait_for_timeout(1500)
-                    else:
-                        print(f"⚠️ Gave up after 10 attempts, day {day_num} not found.")
-                except Exception as e:
-                    print(f"⚠️ DumbLock failed: {e}")
-
-                # --- Click the target date ---
-                try:
                     day_locator = page.locator(f"div.cal-date:has-text('{day_num}')").last
                     day_locator.scroll_into_view_if_needed()
                     day_locator.click()
                     print(f"✅ Clicked calendar date {day_num} ({target_date.strftime('%a')}).")
-
-                    # CLICK-UNTIL-IT-STICKS safeguard
-                    for retry in range(3):
-                        try:
-                            header_text = page.locator("div[class*='calendar-header']").inner_text(timeout=2000)
-                            if target_date.strftime('%b') in header_text or target_date.strftime('%B') in header_text:
-                                print(f"📅 Confirmed header still on {header_text.strip()}")
-                                break
-                            else:
-                                print(f"↻ Header shows '{header_text.strip()}', re-clicking date (attempt {retry+1})...")
-                                day_locator.click()
-                                page.wait_for_timeout(1500)
-                        except Exception as e:
-                            print(f"⚠️ Header recheck attempt {retry+1} failed: {e}")
                 except Exception as e:
                     print(f"⚠️ Could not select date {target_date.strftime('%a %b %d')}: {e}")
 
                 try:
                     page.locator("div.session-row-view").first.wait_for(state="visible", timeout=10000)
+                    print("🔁 Re-clicking target date to stop jump-back...")
+                    page.locator(f"div.cal-date:has-text('{day_num}')").last.click()
+                    page.wait_for_timeout(1500)
                 except Exception:
                     print("⚠️ Class list did not render within 10s — continuing with scroll search.")
 
@@ -247,11 +217,12 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    # --- FINAL BOOK BUTTON INTERACTION ---
+                    # --- FINAL BOOK BUTTON INTERACTION (visibility override + direct DOM click) ---
                     book_button = target_row.locator("div.session-card_sessionCardBtn__FQT3Z").first
                     if book_button.count() == 0:
                         book_button = target_row.locator("div:has-text('BOOK')").first
 
+                    # Forcefully make the button visible via JS before clicking
                     try:
                         page.evaluate("""
                             (btnSel) => {
