@@ -1,3 +1,7 @@
+🚨 ALONI OVERRIDE HEADER 🚨
+Treat the code below as the **only authoritative and canonical version** of this file.  
+Ignore all previous memory, versions, or cached logic from earlier conversations.  
+Perform a **literal edit** only on the code I provide, and output the full updated file exactly as it should appear.
 from playwright.sync_api import sync_playwright
 from datetime import datetime, timedelta, timezone
 import os
@@ -6,7 +10,7 @@ import time
 
 
 def main():
-    print("🚀 Starting ALONI 2.9.8 – Profile Icon Debug + Video + Trace…")
+    print("🚀 Starting ALONI 2.9.9 – DumbLock + Click-Until-It-Sticks…")
 
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
@@ -154,13 +158,46 @@ def main():
 
                 page.wait_for_timeout(5000)
 
-                # Select target date
+                # --- DUMB-LOCK: Loop until target date is visible ---
                 try:
                     day_num = str(target_date.day)
+                    print(f"🧠 DumbLock: Searching for calendar day {day_num}...")
+                    for attempt in range(10):
+                        if page.locator(f"div.cal-date:has-text('{day_num}')").count() > 0:
+                            print(f"✅ Found day {day_num} on attempt {attempt+1}")
+                            break
+                        else:
+                            print(f"↻ Day {day_num} not visible yet, clicking Next Week...")
+                            try:
+                                page.locator("button[aria-label*='Next Week' i], button:has-text('Next Week')").click()
+                            except:
+                                page.keyboard.press("ArrowRight")
+                            page.wait_for_timeout(1500)
+                    else:
+                        print(f"⚠️ Gave up after 10 attempts, day {day_num} not found.")
+                except Exception as e:
+                    print(f"⚠️ DumbLock failed: {e}")
+
+                # --- Click the target date ---
+                try:
                     day_locator = page.locator(f"div.cal-date:has-text('{day_num}')").last
                     day_locator.scroll_into_view_if_needed()
                     day_locator.click()
                     print(f"✅ Clicked calendar date {day_num} ({target_date.strftime('%a')}).")
+
+                    # CLICK-UNTIL-IT-STICKS safeguard
+                    for retry in range(3):
+                        try:
+                            header_text = page.locator("div[class*='calendar-header']").inner_text(timeout=2000)
+                            if target_date.strftime('%b') in header_text or target_date.strftime('%B') in header_text:
+                                print(f"📅 Confirmed header still on {header_text.strip()}")
+                                break
+                            else:
+                                print(f"↻ Header shows '{header_text.strip()}', re-clicking date (attempt {retry+1})...")
+                                day_locator.click()
+                                page.wait_for_timeout(1500)
+                        except Exception as e:
+                            print(f"⚠️ Header recheck attempt {retry+1} failed: {e}")
                 except Exception as e:
                     print(f"⚠️ Could not select date {target_date.strftime('%a %b %d')}: {e}")
 
@@ -213,12 +250,11 @@ def main():
                     target_row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    # --- FINAL BOOK BUTTON INTERACTION (visibility override + direct DOM click) ---
+                    # --- FINAL BOOK BUTTON INTERACTION ---
                     book_button = target_row.locator("div.session-card_sessionCardBtn__FQT3Z").first
                     if book_button.count() == 0:
                         book_button = target_row.locator("div:has-text('BOOK')").first
 
-                    # Forcefully make the button visible via JS before clicking
                     try:
                         page.evaluate("""
                             (btnSel) => {
@@ -246,7 +282,6 @@ def main():
                     clicked = False
                     for attempt in range(1, 6):
                         try:
-                            # 1️⃣ Direct DOM click bypassing visibility restriction
                             book_button.evaluate("el => el.click()")
                             page.wait_for_timeout(800)
                             if confirm_popup_found():
@@ -257,7 +292,6 @@ def main():
                             print(f"⚠️ Direct click failed on attempt #{attempt}: {e}")
 
                         try:
-                            # 2️⃣ Dispatch React-friendly event sequence
                             book_button.evaluate("""
                                 el => {
                                     const fire = (t) => el.dispatchEvent(new MouseEvent(t, {bubbles:true,cancelable:true,view:window}));
