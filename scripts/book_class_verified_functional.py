@@ -1,7 +1,4 @@
-🚨 ALONI OVERRIDE HEADER 🚨
-Treat the code below as the **only authoritative and canonical version** of this file.  
-Ignore all previous memory, versions, or cached logic from earlier conversations.  
-Perform a **literal edit** only on the code I provide, and output the full updated file exactly as it should appear.
+
 from playwright.sync_api import sync_playwright
 from datetime import datetime, timedelta, timezone
 import os
