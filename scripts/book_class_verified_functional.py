@@ -141,6 +141,55 @@ def _calendar_day_visible(page, target_date: datetime) -> bool:
     return False
 
 
+def _calendar_reset_detected(page, target_date: datetime) -> bool:
+    """Return True when the calendar snaps back to today's date."""
+    if target_date.date() == datetime.now().date():
+        return False
+
+    today_locator = page.locator("[aria-current='date']").first
+    try:
+        if today_locator.count() == 0 or not today_locator.is_visible():
+            return False
+    except Exception:
+        return False
+
+    def _normalize(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "")).strip().lower()
+
+    today = datetime.now()
+    month_tokens = {
+        today.strftime("%b").lower(),
+        today.strftime("%B").lower(),
+    }
+    day_tokens = {
+        str(today.day),
+        today.strftime("%d"),
+    }
+
+    text_parts = []
+    for accessor in ("data-date", "data-fulldate", "aria-label"):
+        with suppress(Exception):
+            value = today_locator.get_attribute(accessor)
+            if value:
+                text_parts.append(value)
+    with suppress(Exception):
+        text_parts.append(today_locator.inner_text())
+
+    combined = _normalize(" ".join(text_parts))
+    if combined:
+        has_day = any(token in combined for token in day_tokens)
+        has_month = any(token in combined for token in month_tokens)
+        if not (has_day and has_month):
+            return False
+
+    try:
+        target_visible = _calendar_day_visible(page, target_date)
+    except Exception:
+        target_visible = True
+
+    return not target_visible
+
+
 def _find_calendar_day(page, target_date: datetime):
     """Find the locator for the target calendar day, if present."""
     for selector in _calendar_day_selectors(target_date):
@@ -222,12 +271,21 @@ def _select_target_day(page, target_date: datetime) -> None:
             continue
 
         page.wait_for_timeout(200)
+
+        if _calendar_reset_detected(page, target_date):
+            print("↩️ Calendar reset to today — re-selecting target date…")
+            _nudge_calendar(page, target_date, aggressive=True)
+            page.wait_for_timeout(300)
+            continue
         try:
             _wait_for_day_lock(page, target_date)
             print(f"✅ Clicked calendar date {target_date.day} ({day_label}).")
             return
         except PlaywrightTimeout:
-            print(f"🔁 Calendar selection drift detected (attempt {attempt + 1}/5) — refocusing…")
+            if _calendar_reset_detected(page, target_date):
+                print(f"↩️ Calendar reset detected (attempt {attempt + 1}/5) — recovering target date…")
+            else:
+                print(f"🔁 Calendar selection drift detected (attempt {attempt + 1}/5) — refocusing…")
             _nudge_calendar(page, target_date, aggressive=True)
             page.wait_for_timeout(300)
 
