@@ -239,9 +239,41 @@ def _nudge_calendar(page, target_date: datetime, aggressive: bool = False) -> bo
     return False
 
 
+def _wait_for_session_reload(page, timeout_ms: int = 9000) -> bool:
+    """Wait for the session list/calendar container to blank and repopulate."""
+    selectors = [
+        ".SessionPickerCalendar_calendarScroll__",
+        "div.session-row-view",
+    ]
+    start = time.time()
+    saw_blank = False
+
+    def _any_visible() -> bool:
+        for selector in selectors:
+            locator = page.locator(selector).first
+            with suppress(Exception):
+                if locator.count() > 0 and locator.is_visible():
+                    return True
+        return False
+
+    while True:
+        elapsed = time.time() - start
+        if elapsed * 1000 >= timeout_ms:
+            break
+        visible = _any_visible()
+        if visible and (saw_blank or elapsed > 0.6):
+            return True
+        if not visible:
+            saw_blank = True
+        page.wait_for_timeout(150)
+
+    return _any_visible()
+
+
 def _select_target_day(page, target_date: datetime) -> None:
     """Click the desired calendar day and re-assert selection if the UI jumps."""
     day_label = target_date.strftime('%a')
+    reload_reselect_done = False
 
     for attempt in range(5):
         locator = _find_calendar_day(page, target_date)
@@ -271,14 +303,21 @@ def _select_target_day(page, target_date: datetime) -> None:
             continue
 
         page.wait_for_timeout(200)
+        reload_observed = _wait_for_session_reload(page, timeout_ms=9000)
 
         if _calendar_reset_detected(page, target_date):
-            print("↩️ Calendar reset to today — re-selecting target date…")
+            if not reload_reselect_done:
+                reload_reselect_done = True
+                print("↩️ Calendar reloaded, reselecting target date")
+            else:
+                print("↩️ Calendar reset to today — re-selecting target date…")
             _nudge_calendar(page, target_date, aggressive=True)
             page.wait_for_timeout(300)
             continue
         try:
             _wait_for_day_lock(page, target_date)
+            if reload_observed:
+                print("✅ Calendar stable after reload")
             print(f"✅ Clicked calendar date {target_date.day} ({day_label}).")
             return
         except PlaywrightTimeout:
