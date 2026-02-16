@@ -401,10 +401,10 @@ def main():
         ]
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-    target_date = datetime.now() + timedelta(days=14)
+    target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
     should_book = weekday in ["Monday", "Tuesday", "Wednesday"]
-    print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (14 days from today)")
+    print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
