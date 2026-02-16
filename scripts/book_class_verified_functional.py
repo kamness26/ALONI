@@ -270,6 +270,49 @@ def _wait_for_session_reload(page, timeout_ms: int = 9000) -> bool:
     return _any_visible()
 
 
+def _scroll_session_list(page, pixels: int = 900) -> None:
+    """Scroll the sessions container first; fall back to page wheel if needed."""
+    scrollers = [
+        ".SessionPickerCalendar_calendarScroll__",
+        "div[class*='calendarScroll']",
+        "div[class*='sessionList']",
+    ]
+
+    for selector in scrollers:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() == 0 or not locator.is_visible():
+                continue
+            moved = locator.evaluate(
+                """(el, amount) => {
+                    if (!(el instanceof HTMLElement)) return false;
+                    const before = el.scrollTop;
+                    el.scrollBy(0, amount);
+                    return el.scrollTop !== before;
+                }""",
+                pixels,
+            )
+            if moved:
+                return
+
+    page.mouse.wheel(0, pixels)
+
+
+def _ensure_target_day_locked(page, target_date: datetime, retries: int = 3) -> None:
+    """Guard against calendar snap-back by continuously re-locking target day."""
+    for _ in range(retries):
+        if _calendar_reset_detected(page, target_date):
+            print("↩️ Calendar jumped to today — restoring target date.")
+            _select_target_day(page, target_date)
+        try:
+            _wait_for_day_lock(page, target_date, timeout=2500)
+            return
+        except PlaywrightTimeout:
+            print("🔁 Target day lock lost — reselecting target date.")
+            _select_target_day(page, target_date)
+    raise RuntimeError("Target date lock could not be maintained.")
+
+
 def _select_target_day(page, target_date: datetime) -> None:
     """Click the desired calendar day and re-assert selection if the UI jumps."""
     day_label = target_date.strftime('%a')
@@ -340,9 +383,9 @@ def _prime_session_scroll(page) -> None:
         return
 
     page.wait_for_timeout(200)
-    page.mouse.wheel(0, 800)
+    _scroll_session_list(page, 800)
     page.wait_for_timeout(200)
-    page.mouse.wheel(0, 800)
+    _scroll_session_list(page, 800)
     print("🖱️ Primed session list scroll for selected day.")
 
 
@@ -358,10 +401,10 @@ def main():
         ]
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-    target_date = datetime.now() + timedelta(days=13)
+    target_date = datetime.now() + timedelta(days=14)
     weekday = target_date.strftime("%A")
     should_book = weekday in ["Monday", "Tuesday", "Wednesday"]
-    print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
+    print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (14 days from today)")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -464,6 +507,7 @@ def main():
                 # Pick date + scroll-lock
                 try:
                     _select_target_day(page, target_date)
+                    _ensure_target_day_locked(page, target_date)
                     _prime_session_scroll(page)
                 except Exception as e:
                     print(f"⚠️ Date select error: {e}")
@@ -476,8 +520,7 @@ def main():
 
                     def find_row():
                         for _ in range(20):
-                            with suppress(PlaywrightTimeout):
-                                _wait_for_day_lock(page, target_date, timeout=1500)
+                            _ensure_target_day_locked(page, target_date)
                             for i in range(rows.count()):
                                 try:
                                     text = rows.nth(i).inner_text(timeout=1000).lower()
@@ -485,7 +528,7 @@ def main():
                                         return rows.nth(i)
                                 except:
                                     continue
-                            page.mouse.wheel(0, 900)
+                            _scroll_session_list(page, 900)
                             page.wait_for_timeout(300)
                         return None
 
