@@ -6,6 +6,18 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 
+def _target_iso(target_date: datetime) -> str:
+    return target_date.strftime("%Y-%m-%d")
+
+
+def _save_debug_screenshot(page, label: str) -> None:
+    """Capture a checkpoint screenshot to diagnose date drift in CI."""
+    with suppress(Exception):
+        os.makedirs("screenshots", exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        page.screenshot(path=f"screenshots/{stamp}_{label}.png", full_page=False)
+
+
 def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> None:
     """Ensure the calendar acknowledges the selected day before proceeding."""
     suffix = target_date.strftime("-%m-%d").lower()
@@ -101,35 +113,26 @@ def _dismiss_klaviyo_popup(page) -> bool:
 
 
 def _calendar_day_selectors(target_date: datetime) -> list[str]:
-    """Return selectors that identify the target calendar day without relying on the year."""
+    """Return strict selectors for a specific day and avoid ambiguous text matches."""
+    iso = _target_iso(target_date)
     suffix = target_date.strftime("-%m-%d")
+    month_short = target_date.strftime("%b").lower()
+    month_long = target_date.strftime("%B").lower()
     day = str(target_date.day)
-    month_variants = list(dict.fromkeys([
-        target_date.strftime("%b"),
-        target_date.strftime("%b").upper(),
-        target_date.strftime("%B"),
-    ]))
+    day_padded = target_date.strftime("%d")
+    weekday_short = target_date.strftime("%a").lower()
+    weekday_long = target_date.strftime("%A").lower()
 
-    selectors = [
+    return [
+        f"[data-date='{iso}']",
+        f"[data-fulldate='{iso}']",
         f"[data-date$='{suffix}']",
-        f"[data-date*='{suffix}']",
         f"[data-fulldate$='{suffix}']",
-        f"[data-fulldate*='{suffix}']",
-        f"[data-date='{target_date.strftime('%Y-%m-%d')}']",
+        f"[aria-label*='{weekday_short}, {month_short} {day}' i]",
+        f"[aria-label*='{weekday_long}, {month_long} {day}' i]",
+        f"[aria-label*='{month_short} {day_padded}' i]",
+        f"[aria-label*='{month_long} {day}' i]",
     ]
-
-    for month in month_variants:
-        selectors.extend([
-            f"button:has-text('{month} {day}')",
-            f"button:has-text('{day} {month}')",
-            f"div.cal-date:has-text('{month} {day}')",
-            f"div.cal-date:has-text('{day} {month}')",
-        ])
-
-    # Fallback: bare day inside calendar cells.
-    selectors.append(f"div.cal-date:has-text('{day}')")
-    selectors.append(f"button:has-text('{day}')")
-    return selectors
 
 
 def _calendar_day_visible(page, target_date: datetime) -> bool:
@@ -196,15 +199,18 @@ def _find_calendar_day(page, target_date: datetime):
         locator = page.locator(selector)
         with suppress(Exception):
             if locator.count() > 0:
-                return locator.last
+                for i in range(locator.count()):
+                    candidate = locator.nth(i)
+                    if candidate.is_visible():
+                        return candidate
     return None
 
 
 def _nudge_calendar(page, target_date: datetime, aggressive: bool = False) -> bool:
     """Nudge the calendar forward/backward to reveal the target date."""
     forward_controls = [
-        "button[aria-label*='next']",
-        "button[aria-label*='forward']",
+        "button[aria-label*='next' i]",
+        "button[aria-label*='forward' i]",
         "button[data-testid='calendar-next']",
         "button[data-testid='calendar-forward']",
         "button:has-text('Next week')",
@@ -212,8 +218,8 @@ def _nudge_calendar(page, target_date: datetime, aggressive: bool = False) -> bo
         "button:has-text('Next')",
     ]
     backward_controls = [
-        "button[aria-label*='previous']",
-        "button[aria-label*='prev']",
+        "button[aria-label*='previous' i]",
+        "button[aria-label*='prev' i]",
         "button[data-testid='calendar-prev']",
         "button[data-testid='calendar-back']",
         "button:has-text('Previous week')",
@@ -236,6 +242,31 @@ def _nudge_calendar(page, target_date: datetime, aggressive: bool = False) -> bo
             page.wait_for_timeout(250)
             if _calendar_day_visible(page, target_date):
                 return True
+
+    # Some UI variants use horizontal calendar scrolling instead of nav buttons.
+    dx = 360 if is_future else -360
+    scroll_containers = [
+        "div.calendar-container",
+        "div.schedule-calendar",
+        "div[class*='calendarScroll']",
+        "div[class*='calendar-container']",
+    ]
+    for selector in scroll_containers:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() == 0 or not locator.is_visible():
+                continue
+            for _ in range(3 if aggressive else 1):
+                locator.evaluate(
+                    """(el, delta) => {
+                        if (!(el instanceof HTMLElement)) return;
+                        el.scrollBy({ left: delta, behavior: 'auto' });
+                    }""",
+                    dx,
+                )
+                page.wait_for_timeout(250)
+                if _calendar_day_visible(page, target_date):
+                    return True
     return False
 
 
@@ -313,6 +344,16 @@ def _ensure_target_day_locked(page, target_date: datetime, retries: int = 3) -> 
     raise RuntimeError("Target date lock could not be maintained.")
 
 
+def _assert_target_day_before_book(page, target_date: datetime) -> None:
+    """Hard gate: never click BOOK unless the target day is still selected."""
+    _ensure_target_day_locked(page, target_date, retries=2)
+    try:
+        _wait_for_day_lock(page, target_date, timeout=2000)
+    except PlaywrightTimeout as exc:
+        _save_debug_screenshot(page, "target_day_assert_failed")
+        raise RuntimeError("Target day assertion failed immediately before BOOK click.") from exc
+
+
 def _select_target_day(page, target_date: datetime) -> None:
     """Click the desired calendar day and re-assert selection if the UI jumps."""
     day_label = target_date.strftime('%a')
@@ -322,7 +363,8 @@ def _select_target_day(page, target_date: datetime) -> None:
         locator = _find_calendar_day(page, target_date)
         if locator is None:
             print("🔎 Target day not visible — nudging calendar…")
-            _nudge_calendar(page, target_date, aggressive=True)
+            if not _nudge_calendar(page, target_date, aggressive=True):
+                print("⚠️ Could not navigate calendar to target day yet.")
             page.wait_for_timeout(300)
             continue
 
@@ -361,6 +403,7 @@ def _select_target_day(page, target_date: datetime) -> None:
             _wait_for_day_lock(page, target_date)
             if reload_observed:
                 print("✅ Calendar stable after reload")
+            _save_debug_screenshot(page, "date_locked")
             print(f"✅ Clicked calendar date {target_date.day} ({day_label}).")
             return
         except PlaywrightTimeout:
@@ -500,7 +543,8 @@ def main():
                     book_btn.click()
                     print("✅ Clicked 'Book a class'.")
                 except Exception as e:
-                    print(f"⚠️ Book button error: {e}")
+                    _save_debug_screenshot(page, "book_class_button_error")
+                    raise RuntimeError(f"Book button error: {e}") from e
 
                 page.wait_for_timeout(5000)
 
@@ -510,7 +554,8 @@ def main():
                     _ensure_target_day_locked(page, target_date)
                     _prime_session_scroll(page)
                 except Exception as e:
-                    print(f"⚠️ Date select error: {e}")
+                    _save_debug_screenshot(page, "date_select_error")
+                    raise RuntimeError(f"Date select error: {e}") from e
 
                 # Locate target class and book
                 try:
@@ -534,8 +579,8 @@ def main():
 
                     row = find_row()
                     if row is None:
-                        print("⚠️ Target class not found.")
-                        return
+                        _save_debug_screenshot(page, "target_class_not_found")
+                        raise RuntimeError("Target class not found on target date.")
                     row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
@@ -543,13 +588,15 @@ def main():
                     if book.count() == 0:
                         book = row.locator("div:has-text('BOOK')").first
                     try:
+                        _assert_target_day_before_book(page, target_date)
                         book.evaluate("el => el.click()")
                         page.wait_for_timeout(800)
                         print("✅ Clicked BOOK button.")
                     except Exception as e:
-                        print(f"⚠️ BOOK click failed: {e}")
+                        _save_debug_screenshot(page, "book_click_failed")
+                        raise RuntimeError(f"BOOK click failed: {e}") from e
                 except Exception as e:
-                    print(f"⚠️ Booking error: {e}")
+                    raise RuntimeError(f"Booking error: {e}") from e
 
             else:
                 print(f"📆 {weekday} is not a booking day — skipping.")
