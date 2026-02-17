@@ -723,6 +723,67 @@ def _row_cta_text(row) -> str:
     return ""
 
 
+def _row_signature(row) -> dict[str, str]:
+    """Capture stable row attributes so we can re-find it after click/re-render."""
+    href = ""
+    text_norm = ""
+    with suppress(Exception):
+        link = row.locator("a.session-title-link").first
+        if link.count() > 0:
+            href = (link.get_attribute("href") or "").strip()
+    with suppress(Exception):
+        text_norm = re.sub(r"\s+", " ", (row.inner_text(timeout=1000) or "").strip().lower())
+    return {"href": href, "text": text_norm}
+
+
+def _find_row_by_signature(page, sig: dict[str, str]):
+    """Reacquire the same row after click/reload."""
+    rows = page.locator("div.session-row-view")
+    row_count = 0
+    with suppress(Exception):
+        row_count = rows.count()
+
+    href = (sig.get("href") or "").strip()
+    needle = sig.get("text") or ""
+    must_have = [token for token in ["ys - yoga sculpt", "flatiron"] if token in needle]
+
+    for i in range(row_count):
+        candidate = rows.nth(i)
+        with suppress(Exception):
+            if href:
+                link = candidate.locator(f"a.session-title-link[href='{href}']").first
+                if link.count() > 0:
+                    return candidate
+        with suppress(Exception):
+            text = re.sub(r"\s+", " ", (candidate.inner_text(timeout=600) or "").strip().lower())
+            if all(token in text for token in must_have):
+                # keep the same target time row when possible
+                if "11:15 pm" in needle and "11:15 pm" not in text:
+                    continue
+                return candidate
+    return None
+
+
+def _wait_for_booking_confirmation(page, sig: dict[str, str], timeout_ms: int = 12000) -> None:
+    """Fail unless the matched row turns into BOOKED shortly after click."""
+    deadline = time.time() + (timeout_ms / 1000.0)
+    while time.time() < deadline:
+        if _cancel_modal_present(page):
+            _dismiss_cancel_modal_safe(page)
+            raise RuntimeError("Cancel modal appeared after BOOK click; reservation preserved.")
+
+        row = _find_row_by_signature(page, sig)
+        if row is not None:
+            cta = _row_cta_text(row)
+            if cta == "booked":
+                print("✅ Booking confirmation detected (BOOKED).")
+                return
+        page.wait_for_timeout(250)
+
+    _save_debug_screenshot(page, "booking_confirmation_missing")
+    raise RuntimeError("BOOK click did not confirm (CTA never changed to BOOKED).")
+
+
 def _row_has_forbidden_status(text_norm: str) -> bool:
     forbidden = [
         "booked",
@@ -1060,13 +1121,29 @@ def main():
                     row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    book = row.locator("div.session-card_sessionCardBtn__FQT3Z").filter(
-                        has_text=re.compile(r"^\s*BOOK\s*$", re.IGNORECASE)
-                    ).first
-                    if book.count() == 0:
-                        book = row.locator("button, div").filter(
-                            has_text=re.compile(r"^\s*BOOK\s*$", re.IGNORECASE)
-                        ).first
+                    row_sig = _row_signature(row)
+                    book = None
+                    ctas = row.locator("div.session-card_sessionCardBtn__FQT3Z")
+                    for i in range(ctas.count()):
+                        candidate = ctas.nth(i)
+                        with suppress(Exception):
+                            if not candidate.is_visible():
+                                continue
+                            label = re.sub(r"\s+", " ", (candidate.inner_text(timeout=400) or "").strip().lower())
+                            if label == "book":
+                                book = candidate
+                                break
+                    if book is None:
+                        buttons = row.locator("button")
+                        for i in range(buttons.count()):
+                            candidate = buttons.nth(i)
+                            with suppress(Exception):
+                                if not candidate.is_visible():
+                                    continue
+                                label = re.sub(r"\s+", " ", (candidate.inner_text(timeout=400) or "").strip().lower())
+                                if label == "book":
+                                    book = candidate
+                                    break
                     try:
                         _assert_target_day_before_book(page, target_date)
                         if _cancel_modal_present(page):
@@ -1076,14 +1153,11 @@ def main():
                         if not execute_booking:
                             print("🧪 Dry run complete — BOOK click skipped (set EXECUTE_BOOKING=true to execute).")
                         else:
-                            if book.count() == 0:
+                            if book is None:
                                 raise RuntimeError("Exact 'BOOK' CTA not found on matched row.")
-                            book.evaluate("el => el.click()")
-                            page.wait_for_timeout(800)
-                            if _cancel_modal_present(page):
-                                _dismiss_cancel_modal_safe(page)
-                                _save_debug_screenshot(page, "cancel_modal_intercepted")
-                                raise RuntimeError("Cancel modal appeared after click; reservation preserved.")
+                            book.scroll_into_view_if_needed()
+                            book.click(timeout=5000)
+                            _wait_for_booking_confirmation(page, row_sig, timeout_ms=12000)
                             print("✅ Clicked BOOK button.")
                     except Exception as e:
                         _save_debug_screenshot(page, "book_click_failed")
