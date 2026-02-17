@@ -55,8 +55,38 @@ def _read_selected_schedule_date(page) -> datetime | None:
     return candidate
 
 
+def _is_target_day_selected(page, target_date: datetime) -> bool:
+    """Prefer schedule heading/day bar text to confirm the selected day."""
+    selected = _read_selected_schedule_date(page)
+    if selected and selected.date() == target_date.date():
+        return True
+
+    target_label_long = target_date.strftime("%a, %b %d").lower()
+    target_label_short = target_date.strftime("%a, %b %-d").lower() if os.name != "nt" else target_label_long
+    target_compact = target_label_long.replace(" 0", " ")
+
+    daybar_selectors = [
+        "div.days-bar",
+        "div[class*='days-bar']",
+        "div.schedule-page",
+    ]
+    for selector in daybar_selectors:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() == 0 or not locator.is_visible():
+                continue
+            text = (locator.inner_text(timeout=600) or "").strip().lower()
+            text = re.sub(r"\s+", " ", text)
+            if target_label_long in text or target_compact in text or target_label_short in text:
+                return True
+    return False
+
+
 def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> None:
     """Ensure the calendar acknowledges the selected day before proceeding."""
+    if _is_target_day_selected(page, target_date):
+        return
+
     suffix = target_date.strftime("-%m-%d").lower()
     day_plain = str(target_date.day)
     day_padded = target_date.strftime("%d")
@@ -76,8 +106,17 @@ def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> No
 
             return selectedNodes.some((el) => {
                 const dataset = el.dataset || {};
+                const parent = el.closest('[data-date], [data-fulldate], .cal-item');
+                const parentDataset = parent && parent.dataset ? parent.dataset : {};
                 const dataDate = normalize(
-                    dataset.date || dataset.fulldate || el.getAttribute('data-date') || el.getAttribute('data-fulldate')
+                    dataset.date ||
+                    dataset.fulldate ||
+                    parentDataset.date ||
+                    parentDataset.fulldate ||
+                    el.getAttribute('data-date') ||
+                    el.getAttribute('data-fulldate') ||
+                    (parent ? parent.getAttribute('data-date') : '') ||
+                    (parent ? parent.getAttribute('data-fulldate') : '')
                 );
                 if (dataDate && dataDate.includes(suffix)) {
                     return true;
@@ -472,6 +511,8 @@ def _scroll_session_list(page, pixels: int = 900) -> None:
 def _ensure_target_day_locked(page, target_date: datetime, retries: int = 3) -> None:
     """Guard against calendar snap-back by continuously re-locking target day."""
     for _ in range(retries):
+        if _is_target_day_selected(page, target_date):
+            return
         if _calendar_reset_detected(page, target_date):
             print("↩️ Calendar jumped to today — restoring target date.")
             _select_target_day(page, target_date)
@@ -740,16 +781,33 @@ def main():
                 # Locate target class and book
                 try:
                     rows = page.locator("div.session-row-view")
-                    TARGET_CLASS_LOCAL = "11:15 PM"
+                    TARGET_CLASS_LOCAL = (os.getenv("TARGET_CLASS_TIME_UTC") or "11:15 PM").strip()
                     print(f"🕒 Target time (UTC): {TARGET_CLASS_LOCAL}")
+                    target_time_token = re.sub(r"\s+", "", TARGET_CLASS_LOCAL.lower())
 
                     def find_row():
-                        for _ in range(20):
-                            _ensure_target_day_locked(page, target_date)
+                        for attempt in range(26):
+                            if attempt % 4 == 0:
+                                _ensure_target_day_locked(page, target_date, retries=1)
+                            elif not _is_target_day_selected(page, target_date):
+                                _ensure_target_day_locked(page, target_date, retries=1)
+
+                            row_count = rows.count()
+                            if row_count == 0:
+                                _scroll_session_list(page, 900)
+                                page.wait_for_timeout(300)
+                                continue
+
                             for i in range(rows.count()):
                                 try:
                                     text = rows.nth(i).inner_text(timeout=1000).lower()
-                                    if "ys - yoga sculpt" in text and "flatiron" in text and TARGET_CLASS_LOCAL.lower() in text:
+                                    text_norm = re.sub(r"\s+", " ", text).strip()
+                                    time_norm = re.sub(r"\s+", "", text_norm)
+                                    if (
+                                        "ys - yoga sculpt" in text_norm
+                                        and "flatiron" in text_norm
+                                        and target_time_token in time_norm
+                                    ):
                                         return rows.nth(i)
                                 except:
                                     continue
