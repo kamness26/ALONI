@@ -37,6 +37,10 @@ def _read_selected_schedule_date(page) -> datetime | None:
         if text_value:
             break
 
+    # Sticky day bar is usually the most reliable selected-day source in this UI.
+    if not text_value:
+        text_value = _read_days_bar_label(page)
+
     if not text_value:
         return None
 
@@ -126,10 +130,21 @@ def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> No
         target_date.strftime("%b").lower(),
         target_date.strftime("%B").lower(),
     ]
+    day_label_long = target_date.strftime("%a, %b %d").lower()
+    day_label_short = day_label_long.replace(" 0", " ")
     page.wait_for_function(
         """
-        ({ dayPlain, dayPadded, months, suffix }) => {
+        ({ dayPlain, dayPadded, months, suffix, dayLabelLong, dayLabelShort }) => {
             const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+
+            const dayBar = document.querySelector('div.days-bar, div[class*="days-bar"]');
+            if (dayBar) {
+                const bar = normalize(dayBar.textContent);
+                if (bar === dayLabelLong || bar === dayLabelShort) {
+                    return true;
+                }
+            }
+
             const selectedNodes = Array.from(
                 document.querySelectorAll(
                     '[aria-selected="true"], [aria-current="date"], [aria-current="true"], .selected, .active, .is-selected'
@@ -159,7 +174,8 @@ def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> No
                 const combined = `${text} ${aria}`.trim();
                 const hasDay = combined.includes(dayPlain) || combined.includes(dayPadded);
                 const hasMonth = months.some((month) => combined.includes(month));
-                return hasDay && hasMonth;
+                // Some selected day chips only expose weekday/day without month.
+                return hasDay && (hasMonth || combined.includes('mon') || combined.includes('tue') || combined.includes('wed') || combined.includes('thu') || combined.includes('fri') || combined.includes('sat') || combined.includes('sun'));
             });
         }
         """,
@@ -168,6 +184,8 @@ def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> No
             "dayPadded": day_padded,
             "months": months,
             "suffix": suffix,
+            "dayLabelLong": day_label_long,
+            "dayLabelShort": day_label_short,
         },
         timeout=timeout,
     )
