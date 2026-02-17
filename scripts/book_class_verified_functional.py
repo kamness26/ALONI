@@ -62,13 +62,12 @@ def _is_target_day_selected(page, target_date: datetime) -> bool:
         return True
 
     target_label_long = target_date.strftime("%a, %b %d").lower()
-    target_label_short = target_date.strftime("%a, %b %-d").lower() if os.name != "nt" else target_label_long
+    target_label_short = target_label_long.replace(" 0", " ")
     target_compact = target_label_long.replace(" 0", " ")
 
     daybar_selectors = [
         "div.days-bar",
         "div[class*='days-bar']",
-        "div.schedule-page",
     ]
     for selector in daybar_selectors:
         locator = page.locator(selector).first
@@ -77,9 +76,42 @@ def _is_target_day_selected(page, target_date: datetime) -> bool:
                 continue
             text = (locator.inner_text(timeout=600) or "").strip().lower()
             text = re.sub(r"\s+", " ", text)
-            if target_label_long in text or target_compact in text or target_label_short in text:
+            if text in {target_label_long, target_compact, target_label_short}:
                 return True
     return False
+
+
+def _read_days_bar_label(page) -> str | None:
+    """Read the selected day label from the sticky day bar (e.g., 'Mon, Mar 02')."""
+    selectors = [
+        "div.days-bar",
+        "div[class*='days-bar']",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() == 0 or not locator.is_visible():
+                continue
+            text = (locator.inner_text(timeout=700) or "").strip()
+            text = re.sub(r"\s+", " ", text)
+            match = re.search(r"[A-Za-z]{3},\s+[A-Za-z]{3}\s+\d{1,2}", text)
+            if match:
+                return match.group(0)
+    return None
+
+
+def _assert_exact_target_day(page, target_date: datetime) -> None:
+    """Require exact selected day match before any booking actions."""
+    label = _read_days_bar_label(page)
+    target_labels = {
+        target_date.strftime("%a, %b %d"),
+        target_date.strftime("%a, %b %d").replace(" 0", " "),
+    }
+    if not label or label not in target_labels:
+        _save_debug_screenshot(page, "target_day_exact_mismatch")
+        raise RuntimeError(
+            f"Active day mismatch. Expected one of {sorted(target_labels)}, got '{label or 'none'}'."
+        )
 
 
 def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> None:
@@ -644,12 +676,71 @@ def _ensure_target_day_locked(page, target_date: datetime, retries: int = 3) -> 
 
 def _assert_target_day_before_book(page, target_date: datetime) -> None:
     """Hard gate: never click BOOK unless the target day is still selected."""
+    _assert_exact_target_day(page, target_date)
     _ensure_target_day_locked(page, target_date, retries=2)
     try:
         _wait_for_day_lock(page, target_date, timeout=2000)
+        _assert_exact_target_day(page, target_date)
     except PlaywrightTimeout as exc:
         _save_debug_screenshot(page, "target_day_assert_failed")
         raise RuntimeError("Target day assertion failed immediately before BOOK click.") from exc
+
+
+def _row_cta_text(row) -> str:
+    """Return normalized CTA text for the session row."""
+    cta_selectors = [
+        "div.session-card_sessionCardBtn__FQT3Z",
+        "button",
+        "a",
+    ]
+    for selector in cta_selectors:
+        locator = row.locator(selector)
+        with suppress(Exception):
+            count = locator.count()
+            for i in range(count):
+                text = (locator.nth(i).inner_text(timeout=400) or "").strip()
+                text = re.sub(r"\s+", " ", text).lower()
+                if text:
+                    return text
+    return ""
+
+
+def _row_has_forbidden_status(text_norm: str) -> bool:
+    forbidden = [
+        "booked",
+        "waitlisted",
+        "join waitlist",
+        "session started",
+        "class full",
+        "cancel class",
+    ]
+    return any(token in text_norm for token in forbidden)
+
+
+def _cancel_modal_present(page) -> bool:
+    """Detect cancel confirmation dialog and avoid destructive action."""
+    modal = page.locator("div.cpy-modal:has-text('Are you sure you want to cancel')").first
+    with suppress(Exception):
+        return modal.count() > 0 and modal.is_visible()
+    return False
+
+
+def _dismiss_cancel_modal_safe(page) -> bool:
+    """Always prefer keeping reservation when cancel modal appears."""
+    if not _cancel_modal_present(page):
+        return False
+    keep_selectors = [
+        "div.cpy-modal button:has-text('KEEP RESERVATION')",
+        "div.cpy-modal div:has-text('KEEP RESERVATION')",
+    ]
+    for selector in keep_selectors:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() > 0 and locator.is_visible():
+                locator.click()
+                page.wait_for_timeout(250)
+                return True
+    return False
 
 
 def _select_target_day(page, target_date: datetime) -> None:
@@ -776,7 +867,9 @@ def main():
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
     should_book = weekday in ["Monday", "Tuesday", "Wednesday"]
+    execute_booking = (os.getenv("EXECUTE_BOOKING", "false").strip().lower() in {"1", "true", "yes", "y"})
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
+    print(f"🧪 Mode: {'EXECUTE' if execute_booking else 'DRY RUN'}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -891,6 +984,7 @@ def main():
                 try:
                     _select_target_day(page, target_date)
                     _ensure_target_day_locked(page, target_date)
+                    _assert_exact_target_day(page, target_date)
                     _prime_session_scroll(page)
                 except Exception as e:
                     _save_debug_screenshot(page, "date_select_error")
@@ -909,6 +1003,7 @@ def main():
                                 _ensure_target_day_locked(page, target_date, retries=1)
                             elif not _is_target_day_selected(page, target_date):
                                 _ensure_target_day_locked(page, target_date, retries=1)
+                            _assert_exact_target_day(page, target_date)
 
                             row_count = rows.count()
                             if row_count == 0:
@@ -926,6 +1021,13 @@ def main():
                                         and "flatiron" in text_norm
                                         and target_time_token in time_norm
                                     ):
+                                        if _row_has_forbidden_status(text_norm):
+                                            print("⛔ Matched row has forbidden status; skipping.")
+                                            continue
+                                        cta_text = _row_cta_text(rows.nth(i))
+                                        if cta_text != "book":
+                                            print(f"⛔ Matched row CTA is '{cta_text}', not 'book'; skipping.")
+                                            continue
                                         return rows.nth(i)
                                 except:
                                     continue
@@ -940,14 +1042,31 @@ def main():
                     row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    book = row.locator("div.session-card_sessionCardBtn__FQT3Z").first
+                    book = row.locator("div.session-card_sessionCardBtn__FQT3Z").filter(
+                        has_text=re.compile(r"^\s*BOOK\s*$", re.IGNORECASE)
+                    ).first
                     if book.count() == 0:
-                        book = row.locator("div:has-text('BOOK')").first
+                        book = row.locator("button, div").filter(
+                            has_text=re.compile(r"^\s*BOOK\s*$", re.IGNORECASE)
+                        ).first
                     try:
                         _assert_target_day_before_book(page, target_date)
-                        book.evaluate("el => el.click()")
-                        page.wait_for_timeout(800)
-                        print("✅ Clicked BOOK button.")
+                        if _cancel_modal_present(page):
+                            _dismiss_cancel_modal_safe(page)
+                            raise RuntimeError("Cancel modal was already open before booking click.")
+
+                        if not execute_booking:
+                            print("🧪 Dry run complete — BOOK click skipped (set EXECUTE_BOOKING=true to execute).")
+                        else:
+                            if book.count() == 0:
+                                raise RuntimeError("Exact 'BOOK' CTA not found on matched row.")
+                            book.evaluate("el => el.click()")
+                            page.wait_for_timeout(800)
+                            if _cancel_modal_present(page):
+                                _dismiss_cancel_modal_safe(page)
+                                _save_debug_screenshot(page, "cancel_modal_intercepted")
+                                raise RuntimeError("Cancel modal appeared after click; reservation preserved.")
+                            print("✅ Clicked BOOK button.")
                     except Exception as e:
                         _save_debug_screenshot(page, "book_click_failed")
                         raise RuntimeError(f"BOOK click failed: {e}") from e
