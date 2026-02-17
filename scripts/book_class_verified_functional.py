@@ -709,9 +709,17 @@ def main():
 
                 # Go directly to schedule view for stability.
                 try:
-                    page.goto("https://www.corepoweryoga.com/yoga-schedules/studio", timeout=60000)
-                    page.wait_for_load_state("networkidle")
-                    page.wait_for_timeout(2500)
+                    page.goto(
+                        "https://www.corepoweryoga.com/yoga-schedules/studio",
+                        timeout=60000,
+                        wait_until="domcontentloaded",
+                    )
+                    # Avoid networkidle on this page because long polling can keep the network busy.
+                    with suppress(Exception):
+                        page.locator("div.schedule-page").first.wait_for(state="visible", timeout=20000)
+                    with suppress(Exception):
+                        page.locator("div.schedule-calendar").first.wait_for(state="visible", timeout=20000)
+                    page.wait_for_timeout(1500)
                     print("✅ Opened studio schedule page directly.")
                     _ensure_studio_filter(page, "Flatiron")
                 except Exception as e:
