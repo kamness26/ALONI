@@ -217,6 +217,50 @@ def _calendar_day_visible(page, target_date: datetime) -> bool:
         with suppress(Exception):
             if page.locator(selector).count() > 0:
                 return True
+
+    # Fallback for UI variants where day cells are text-only without data-date attributes.
+    target_day = target_date.day
+    target_weekday = target_date.strftime("%a")[0].lower()
+    target_month_tokens = {
+        target_date.strftime("%b").lower(),
+        target_date.strftime("%B").lower(),
+    }
+    with suppress(Exception):
+        return bool(
+            page.evaluate(
+                """
+                ({ targetDay, weekdayInitial, monthTokens }) => {
+                    const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const cells = Array.from(
+                        document.querySelectorAll(
+                            ".cal-item, .cal-item-container, [class*='cal-item'], [class*='calendar-day'], [class*='day-item']"
+                        )
+                    );
+                    return cells.some((cell) => {
+                        const txt = norm(cell.textContent);
+                        if (!txt) return false;
+                        if (!txt.includes(String(targetDay))) return false;
+                        if (!txt.includes(weekdayInitial)) return false;
+
+                        const attrs = [
+                            cell.getAttribute('aria-label') || '',
+                            cell.getAttribute('data-date') || '',
+                            cell.getAttribute('data-fulldate') || '',
+                        ]
+                            .map(norm)
+                            .join(' ');
+                        if (!attrs) return true;
+                        return monthTokens.some((m) => attrs.includes(m));
+                    });
+                }
+                """,
+                {
+                    "targetDay": target_day,
+                    "weekdayInitial": target_weekday,
+                    "monthTokens": list(target_month_tokens),
+                },
+            )
+        )
     return False
 
 
@@ -279,7 +323,48 @@ def _find_calendar_day(page, target_date: datetime):
                     candidate = locator.nth(i)
                     if candidate.is_visible():
                         return candidate
+
+    # Text-based fallback when data attributes are absent.
+    target_day = target_date.day
+    weekday_initial = target_date.strftime("%a")[0]
+    fallback_selectors = [
+        f".cal-item:has-text('{target_day}')",
+        f".cal-item-container:has-text('{target_day}')",
+        f"[class*='cal-item']:has-text('{target_day}')",
+        f"[class*='calendar-day']:has-text('{target_day}')",
+        f"[class*='day-item']:has-text('{target_day}')",
+        f"text=/\\b{weekday_initial}\\s*{target_day}\\b/i",
+    ]
+    for selector in fallback_selectors:
+        locator = page.locator(selector)
+        with suppress(Exception):
+            if locator.count() > 0:
+                for i in range(locator.count()):
+                    candidate = locator.nth(i)
+                    if candidate.is_visible():
+                        return candidate
     return None
+
+
+def _wait_for_calendar_strip(page, timeout_ms: int = 12000) -> None:
+    """Ensure the horizontal day strip is rendered before selecting dates."""
+    strip_selectors = [
+        "div.days-bar",
+        "div[class*='days-bar']",
+        "div.schedule-calendar",
+        "div[class*='calendarScroll']",
+    ]
+    start = time.time()
+    while (time.time() - start) * 1000 < timeout_ms:
+        for selector in strip_selectors:
+            locator = page.locator(selector).first
+            with suppress(Exception):
+                if locator.count() > 0 and locator.is_visible():
+                    txt = (locator.inner_text(timeout=400) or "").strip()
+                    if txt:
+                        return
+        page.wait_for_timeout(200)
+    raise RuntimeError("Calendar strip did not render in time.")
 
 
 def _nudge_calendar(page, target_date: datetime, aggressive: bool = False) -> bool:
@@ -322,6 +407,8 @@ def _nudge_calendar(page, target_date: datetime, aggressive: bool = False) -> bo
     # Some UI variants use horizontal calendar scrolling instead of nav buttons.
     dx = 360 if is_future else -360
     scroll_containers = [
+        "div.days-bar",
+        "div[class*='days-bar']",
         "div.calendar-container",
         "div.schedule-calendar",
         "div[class*='calendarScroll']",
@@ -343,6 +430,36 @@ def _nudge_calendar(page, target_date: datetime, aggressive: bool = False) -> bo
                 page.wait_for_timeout(250)
                 if _calendar_day_visible(page, target_date):
                     return True
+
+    # Last-resort generic horizontal scroll across likely strip elements.
+    with suppress(Exception):
+        moved = page.evaluate(
+            """(delta) => {
+                const nodes = Array.from(document.querySelectorAll('div, section')).filter((el) => {
+                    if (!(el instanceof HTMLElement)) return false;
+                    const style = getComputedStyle(el);
+                    const scrollableX = el.scrollWidth > el.clientWidth + 8;
+                    const overflowX = style.overflowX;
+                    const canScroll =
+                        overflowX === 'auto' || overflowX === 'scroll' || overflowX === 'overlay' || scrollableX;
+                    if (!canScroll) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 200 && r.height > 24 && r.top >= 0 && r.top < window.innerHeight * 0.7;
+                });
+                let any = false;
+                for (const el of nodes) {
+                    const before = el.scrollLeft;
+                    el.scrollBy({ left: delta, behavior: 'auto' });
+                    if (el.scrollLeft !== before) any = true;
+                }
+                return any;
+            }""",
+            dx,
+        )
+        if moved:
+            page.wait_for_timeout(300)
+            if _calendar_day_visible(page, target_date):
+                return True
     return False
 
 
@@ -760,6 +877,7 @@ def main():
                         page.locator("div.schedule-page").first.wait_for(state="visible", timeout=20000)
                     with suppress(Exception):
                         page.locator("div.schedule-calendar").first.wait_for(state="visible", timeout=20000)
+                    _wait_for_calendar_strip(page, timeout_ms=15000)
                     page.wait_for_timeout(1500)
                     print("✅ Opened studio schedule page directly.")
                     _ensure_studio_filter(page, "Flatiron")
