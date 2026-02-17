@@ -18,6 +18,43 @@ def _save_debug_screenshot(page, label: str) -> None:
         page.screenshot(path=f"screenshots/{stamp}_{label}.png", full_page=False)
 
 
+def _read_selected_schedule_date(page) -> datetime | None:
+    """Read the selected schedule date from heading text like 'Sat, Feb 28'."""
+    heading_selectors = [
+        "div.schedule-page h2",
+        "main h2",
+        "h2",
+    ]
+    text_value = None
+    for selector in heading_selectors:
+        locator = page.locator(selector)
+        with suppress(Exception):
+            for i in range(min(locator.count(), 6)):
+                text = (locator.nth(i).inner_text(timeout=500) or "").strip()
+                if re.match(r"^[A-Za-z]{3},\s+[A-Za-z]{3}\s+\d{1,2}$", text):
+                    text_value = text
+                    break
+        if text_value:
+            break
+
+    if not text_value:
+        return None
+
+    try:
+        parsed = datetime.strptime(text_value, "%a, %b %d")
+    except ValueError:
+        return None
+
+    now = datetime.now()
+    candidate = parsed.replace(year=now.year)
+    # Handle year rollover around Jan/Dec boundaries.
+    if candidate.date() < (now - timedelta(days=200)).date():
+        candidate = candidate.replace(year=now.year + 1)
+    elif candidate.date() > (now + timedelta(days=200)).date():
+        candidate = candidate.replace(year=now.year - 1)
+    return candidate
+
+
 def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> None:
     """Ensure the calendar acknowledges the selected day before proceeding."""
     suffix = target_date.strftime("-%m-%d").lower()
@@ -301,6 +338,109 @@ def _wait_for_session_reload(page, timeout_ms: int = 9000) -> bool:
     return _any_visible()
 
 
+def _scroll_calendar_strip(page, forward: bool = True, pixels: int = 420) -> bool:
+    """Scroll the calendar strip horizontally when next/prev buttons are missing."""
+    dx = pixels if forward else -pixels
+    selectors = [
+        "div.calendar-container",
+        "div.schedule-calendar",
+        "div[class*='calendarScroll']",
+        "div[class*='calendar-container']",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() == 0 or not locator.is_visible():
+                continue
+            moved = locator.evaluate(
+                """(el, delta) => {
+                    if (!(el instanceof HTMLElement)) return false;
+                    const before = el.scrollLeft;
+                    el.scrollBy({ left: delta, behavior: 'auto' });
+                    return el.scrollLeft !== before;
+                }""",
+                dx,
+            )
+            if moved:
+                page.wait_for_timeout(250)
+                return True
+    return False
+
+
+def _step_selected_calendar_day(page, forward: bool = True) -> bool:
+    """Advance selection by one day from the currently selected calendar cell."""
+    selected_selectors = [
+        "div.cal-item-container.today",
+        "div.cal-item-container.active",
+        "div.cal-item-container.selected",
+        "[aria-selected='true']",
+    ]
+
+    for selector in selected_selectors:
+        selected = page.locator(selector).first
+        with suppress(Exception):
+            if selected.count() == 0 or not selected.is_visible():
+                continue
+            clicked = selected.evaluate(
+                """(el, dir) => {
+                    const findCell = (node) => {
+                        if (!node) return null;
+                        if (node.classList && node.classList.contains('cal-item-container')) return node;
+                        return node.closest ? node.closest('.cal-item-container') : null;
+                    };
+                    const startCell = findCell(el);
+                    if (!startCell) return false;
+                    const item = startCell.closest('.cal-item') || startCell.parentElement;
+                    if (!item) return false;
+
+                    const sibling = dir > 0 ? item.nextElementSibling : item.previousElementSibling;
+                    if (!sibling) return false;
+                    const target = sibling.querySelector('.cal-item-container') || sibling;
+                    if (!(target instanceof HTMLElement)) return false;
+                    target.click();
+                    return true;
+                }""",
+                1 if forward else -1,
+            )
+            if clicked:
+                page.wait_for_timeout(250)
+                return True
+    return False
+
+
+def _navigate_calendar_to_target(page, target_date: datetime, max_steps: int = 28) -> bool:
+    """Deterministically walk day-by-day until the selected date reaches target_date."""
+    target = target_date.date()
+    for step in range(max_steps):
+        current = _read_selected_schedule_date(page)
+        if current and current.date() == target:
+            _save_debug_screenshot(page, "target_date_header_matched")
+            return True
+
+        forward = True
+        if current:
+            forward = current.date() < target
+
+        _save_debug_screenshot(page, f"calendar_nav_attempt_{step + 1}")
+
+        progressed = _step_selected_calendar_day(page, forward=forward)
+        if not progressed:
+            progressed = _scroll_calendar_strip(page, forward=forward)
+        if not progressed:
+            # Last resort: try existing nudge controls.
+            progressed = _nudge_calendar(page, target_date, aggressive=False)
+
+        if not progressed:
+            page.wait_for_timeout(300)
+            continue
+
+        with suppress(Exception):
+            _wait_for_session_reload(page, timeout_ms=5000)
+        page.wait_for_timeout(250)
+
+    return False
+
+
 def _scroll_session_list(page, pixels: int = 900) -> None:
     """Scroll the sessions container first; fall back to page wheel if needed."""
     scrollers = [
@@ -358,6 +498,12 @@ def _select_target_day(page, target_date: datetime) -> None:
     """Click the desired calendar day and re-assert selection if the UI jumps."""
     day_label = target_date.strftime('%a')
     reload_reselect_done = False
+
+    if _navigate_calendar_to_target(page, target_date, max_steps=28):
+        with suppress(PlaywrightTimeout):
+            _wait_for_day_lock(page, target_date, timeout=2500)
+        print(f"✅ Reached target calendar day via deterministic navigation: {target_date.strftime('%a, %b %d')}")
+        return
 
     for attempt in range(5):
         locator = _find_calendar_day(page, target_date)
@@ -430,6 +576,31 @@ def _prime_session_scroll(page) -> None:
     page.wait_for_timeout(200)
     _scroll_session_list(page, 800)
     print("🖱️ Primed session list scroll for selected day.")
+
+
+def _ensure_studio_filter(page, studio_name: str) -> None:
+    """Best-effort studio filter setup to reduce cross-studio noise."""
+    chip = page.locator(f"text={studio_name}").first
+    with suppress(Exception):
+        if chip.count() > 0 and chip.is_visible():
+            print(f"✅ Studio filter already set: {studio_name}")
+            return
+
+    with suppress(Exception):
+        page.locator("button:has-text('Filter')").first.click(timeout=2000)
+        page.wait_for_timeout(500)
+        option = page.locator(f"text={studio_name}").first
+        if option.count() > 0 and option.is_visible():
+            option.click()
+            with suppress(Exception):
+                page.locator("button:has-text('Apply')").first.click(timeout=1000)
+            with suppress(Exception):
+                page.locator("button:has-text('Done')").first.click(timeout=1000)
+            page.wait_for_timeout(800)
+            print(f"✅ Applied studio filter: {studio_name}")
+            return
+
+    print(f"⚠️ Could not confirm studio filter '{studio_name}' in UI.")
 
 
 def main():
@@ -536,17 +707,18 @@ def main():
             if should_book:
                 print("🧘 Booking window open — proceeding.")
 
-                # Book a class
+                # Go directly to schedule view for stability.
                 try:
-                    book_btn = page.locator("button[data-position='book-a-class']").last
-                    book_btn.wait_for(state="visible", timeout=10000)
-                    book_btn.click()
-                    print("✅ Clicked 'Book a class'.")
+                    page.goto("https://www.corepoweryoga.com/yoga-schedules/studio", timeout=60000)
+                    page.wait_for_load_state("networkidle")
+                    page.wait_for_timeout(2500)
+                    print("✅ Opened studio schedule page directly.")
+                    _ensure_studio_filter(page, "Flatiron")
                 except Exception as e:
                     _save_debug_screenshot(page, "book_class_button_error")
-                    raise RuntimeError(f"Book button error: {e}") from e
+                    raise RuntimeError(f"Schedule navigation error: {e}") from e
 
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(1000)
 
                 # Pick date + scroll-lock
                 try:
