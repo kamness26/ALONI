@@ -18,7 +18,7 @@ jobs:
       COREPOWER_EMAIL: ${{ secrets.COREPOWER_EMAIL }}
       COREPOWER_PASSWORD: ${{ secrets.COREPOWER_PASSWORD }}
       CI: "true"
-      EXECUTE_BOOKING: ${{ github.event_name == 'workflow_dispatch' && inputs.execute_booking || 'false' }}
+      EXECUTE_BOOKING: ${{ github.event_name == 'schedule' && 'true' || (github.event_name == 'workflow_dispatch' && inputs.execute_booking || 'false') }}
 
     steps:
       - name: 🧘 Checkout repository
