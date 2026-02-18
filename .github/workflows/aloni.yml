@@ -8,7 +8,7 @@ on:
       execute_booking:
         description: "Set true to actually click BOOK (false = dry run)"
         required: false
-        default: "false"
+        default: "true"
 
 jobs:
   run-aloni:
