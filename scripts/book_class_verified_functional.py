@@ -849,6 +849,48 @@ def _wait_for_booking_confirmation(page, sig: dict[str, str], timeout_ms: int = 
     raise RuntimeError("BOOK click did not confirm (CTA never changed to BOOKED).")
 
 
+def _booking_success_modal_text(page) -> str:
+    """Read booking success modal text when present."""
+    modal_selectors = [
+        "div:has-text(\"You're in!\")",
+        "div:has-text('Add a Buddy')",
+    ]
+    for selector in modal_selectors:
+        modal = page.locator(selector).first
+        with suppress(Exception):
+            if modal.count() > 0 and modal.is_visible():
+                return re.sub(r"\s+", " ", (modal.inner_text(timeout=1000) or "").strip())
+    return ""
+
+
+def _validate_booking_receipt(page, target_date: datetime) -> None:
+    """
+    Ensure the visible booking confirmation modal matches the intended class/day.
+    """
+    modal_text = _booking_success_modal_text(page)
+    if not modal_text:
+        # Some flows confirm inline via row CTA only; no modal to validate.
+        return
+
+    text_norm = modal_text.lower()
+    if "yoga sculpt" not in text_norm or "flatiron" not in text_norm:
+        raise RuntimeError(f"Booking confirmation modal mismatch (class/location): {modal_text}")
+
+    target_month_short = target_date.strftime("%b").lower()
+    target_month_long = target_date.strftime("%B").lower()
+    target_day_plain = str(target_date.day)
+    target_day_padded = target_date.strftime("%d")
+    has_target_date = (
+        (target_month_short in text_norm or target_month_long in text_norm)
+        and (f" {target_day_plain}" in text_norm or f" {target_day_padded}" in text_norm)
+    )
+    if not has_target_date:
+        raise RuntimeError(
+            "Booking confirmation modal shows a different date than target. "
+            f"Expected {target_date.strftime('%a, %b %d')}; modal='{modal_text}'"
+        )
+
+
 def _row_has_forbidden_status(text_norm: str) -> bool:
     forbidden = [
         "booked",
@@ -1268,11 +1310,26 @@ def main():
                                 if not execute_booking:
                                     print("🧪 Dry run complete — BOOK click skipped (set EXECUTE_BOOKING=true to execute).")
                                 else:
+                                    # Reacquire the target row/CTA after the final day lock to avoid stale or drifted locators.
+                                    fresh_row, _ = find_row()
+                                    if fresh_row is None:
+                                        raise RuntimeError("Target row could not be re-found immediately before click.")
+                                    row = fresh_row
+                                    row_sig = _row_signature(row)
+                                    book = find_visible_book_cta(row)
                                     if book is None:
                                         raise RuntimeError("Exact 'BOOK' CTA not found on matched row.")
-                                    book.scroll_into_view_if_needed()
+
+                                    with suppress(Exception):
+                                        if not row.is_visible():
+                                            row.scroll_into_view_if_needed()
+                                    with suppress(Exception):
+                                        if not book.is_visible():
+                                            book.scroll_into_view_if_needed()
+
                                     book.click(timeout=5000)
                                     _wait_for_booking_confirmation(page, row_sig, timeout_ms=12000)
+                                    _validate_booking_receipt(page, target_date)
                                     print("✅ Clicked BOOK button.")
                                 break
                             except Exception as inner:
