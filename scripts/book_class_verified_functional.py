@@ -810,6 +810,8 @@ def _find_row_by_signature(page, sig: dict[str, str]):
     href = (sig.get("href") or "").strip()
     needle = sig.get("text") or ""
     must_have = [token for token in ["ys - yoga sculpt", "flatiron"] if token in needle]
+    time_match = re.search(r"\b\d{1,2}:\d{2}\s*[ap]m\b", needle)
+    expected_time = time_match.group(0) if time_match else ""
 
     for i in range(row_count):
         candidate = rows.nth(i)
@@ -822,7 +824,7 @@ def _find_row_by_signature(page, sig: dict[str, str]):
             text = re.sub(r"\s+", " ", (candidate.inner_text(timeout=600) or "").strip().lower())
             if all(token in text for token in must_have):
                 # keep the same target time row when possible
-                if "11:15 pm" in needle and "11:15 pm" not in text:
+                if expected_time and expected_time not in text:
                     continue
                 return candidate
     return None
@@ -1276,9 +1278,9 @@ def main():
                                 _assert_exact_target_day(page, target_date)
                                 _prime_session_scroll(page)
 
-                                recovered_row = _find_row_by_signature(page, row_sig)
+                                recovered_row, _ = find_row()
                                 if recovered_row is None:
-                                    recovered_row, _ = find_row()
+                                    recovered_row = _find_row_by_signature(page, row_sig)
                                 if recovered_row is None:
                                     raise RuntimeError("Lost target row after day-reset recovery.")
 
