@@ -1216,7 +1216,7 @@ def main():
     target_date = datetime.now() + timedelta(days=13)
     weekday = target_date.strftime("%A")
     should_book = weekday in ["Monday", "Tuesday", "Wednesday"]
-    execute_booking = (os.getenv("EXECUTE_BOOKING", "false").strip().lower() in {"1", "true", "yes", "y"})
+    execute_booking = True
     print(f"📅 Target date: {target_date.strftime('%A, %b %d')} (13 days from today)")
     print(f"🧪 Mode: {'EXECUTE' if execute_booking else 'DRY RUN'}")
 
@@ -1440,37 +1440,35 @@ def main():
                                     _dismiss_cancel_modal_safe(page)
                                     raise RuntimeError("Cancel modal was already open before booking click.")
 
-                                if not execute_booking:
-                                    print("🧪 Dry run complete — BOOK click skipped (set EXECUTE_BOOKING=true to execute).")
-                                else:
-                                    # Reacquire the target row/CTA after the final day lock to avoid stale or drifted locators.
-                                    fresh_row, _ = find_row()
-                                    if fresh_row is None:
-                                        raise RuntimeError("Target row could not be re-found immediately before click.")
-                                    row = fresh_row
-                                    row_sig = _row_signature(row)
-                                    book = find_visible_book_cta(row)
-                                    if book is None:
-                                        raise RuntimeError("Exact 'BOOK' CTA not found on matched row.")
+                                # Reacquire the target row/CTA after the final day lock to avoid stale or drifted locators.
+                                fresh_row, _ = find_row()
+                                if fresh_row is None:
+                                    raise RuntimeError("Target row could not be re-found immediately before click.")
+                                row = fresh_row
+                                row_sig = _row_signature(row)
+                                book = find_visible_book_cta(row)
+                                if book is None:
+                                    raise RuntimeError("Exact 'BOOK' CTA not found on matched row.")
 
-                                    with suppress(Exception):
-                                        if not row.is_visible():
-                                            row.scroll_into_view_if_needed()
-                                    with suppress(Exception):
-                                        if not book.is_visible():
-                                            book.scroll_into_view_if_needed()
+                                with suppress(Exception):
+                                    if not row.is_visible():
+                                        row.scroll_into_view_if_needed()
+                                with suppress(Exception):
+                                    if not book.is_visible():
+                                        book.scroll_into_view_if_needed()
 
-                                    book.click(timeout=5000)
-                                    _wait_for_booking_confirmation(page, row_sig, timeout_ms=12000)
-                                    try:
-                                        _validate_booking_receipt(page, target_date)
-                                    except Exception as receipt_err:
-                                        with suppress(Exception):
-                                            _save_debug_screenshot(page, "wrong_booking_receipt")
-                                        canceled = _attempt_auto_cancel_wrong_booking(page, target_date)
-                                        suffix = " Auto-cancel attempted." if canceled else " Auto-cancel failed."
-                                        raise RuntimeError(f"{receipt_err}{suffix}")
-                                    print("✅ Clicked BOOK button.")
+                                book.click(timeout=5000)
+                                _wait_for_booking_confirmation(page, row_sig, timeout_ms=12000)
+                                try:
+                                    _validate_booking_receipt(page, target_date)
+                                except Exception as receipt_err:
+                                    with suppress(Exception):
+                                        _save_debug_screenshot(page, "wrong_booking_receipt")
+                                    canceled = _attempt_auto_cancel_wrong_booking(page, target_date)
+                                    if canceled:
+                                        raise RuntimeError(f"{receipt_err} Auto-cancel attempted and succeeded.")
+                                    raise RuntimeError(f"{receipt_err} Auto-cancel failed.")
+                                print("✅ Clicked BOOK button.")
                                 break
                             except Exception as inner:
                                 message = str(inner)
@@ -1479,14 +1477,26 @@ def main():
                                     or "Target day assertion failed" in message
                                     or "Target date lock could not be maintained" in message
                                 )
-                                if not recoverable_day_reset or click_attempt == 2:
+                                recoverable_wrong_booking = (
+                                    "Booking confirmation modal shows a different date than target" in message
+                                    and "Auto-cancel attempted and succeeded" in message
+                                )
+                                if (not recoverable_day_reset and not recoverable_wrong_booking) or click_attempt == 2:
                                     raise
 
-                                print(
-                                    f"↩️ Target day flipped before BOOK click "
-                                    f"(attempt {click_attempt + 1}/3) — recovering and retrying."
-                                )
-                                _save_debug_screenshot(page, f"day_flip_before_book_{click_attempt + 1}")
+                                if recoverable_wrong_booking:
+                                    print(
+                                        f"🧯 Wrong booking was auto-canceled "
+                                        f"(attempt {click_attempt + 1}/3) — retrying target booking."
+                                    )
+                                    with suppress(Exception):
+                                        _save_debug_screenshot(page, f"wrong_booking_retry_{click_attempt + 1}")
+                                else:
+                                    print(
+                                        f"↩️ Target day flipped before BOOK click "
+                                        f"(attempt {click_attempt + 1}/3) — recovering and retrying."
+                                    )
+                                    _save_debug_screenshot(page, f"day_flip_before_book_{click_attempt + 1}")
                                 _select_target_day(page, target_date)
                                 _ensure_target_day_locked(page, target_date, retries=2)
                                 _assert_exact_target_day(page, target_date)
