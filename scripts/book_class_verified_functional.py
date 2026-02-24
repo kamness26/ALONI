@@ -863,6 +863,139 @@ def _booking_success_modal_text(page) -> str:
     return ""
 
 
+def _parse_receipt_month_day(modal_text: str) -> tuple[int, int] | None:
+    month_map = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    match = re.search(r"\b([A-Za-z]{3,9})\s+(\d{1,2})\b", modal_text)
+    if not match:
+        return None
+    month_key = match.group(1)[:3].lower()
+    month = month_map.get(month_key)
+    if not month:
+        return None
+    return month, int(match.group(2))
+
+
+def _parse_receipt_time_token(modal_text: str) -> str:
+    match = re.search(r"\b(\d{1,2}:\d{2}\s*[ap]m)\b", modal_text, flags=re.I)
+    if not match:
+        return ""
+    return re.sub(r"\s+", "", match.group(1).lower())
+
+
+def _close_booking_success_modal(page) -> bool:
+    selectors = [
+        "button:has-text(\"I'M DONE\")",
+        "button:has-text('I’m Done')",
+        "button[aria-label*='close' i]",
+        "button:has-text('Done')",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() > 0 and locator.is_visible():
+                locator.click(timeout=1500)
+                page.wait_for_timeout(400)
+                return True
+    return False
+
+
+def _confirm_cancel_modal(page) -> bool:
+    selectors = [
+        "div.cpy-modal button:has-text('CANCEL CLASS')",
+        "div.cpy-modal div:has-text('CANCEL CLASS')",
+        "div.cpy-modal button:has-text('YES, CANCEL')",
+        "div.cpy-modal button:has-text('Yes, Cancel')",
+        "div.cpy-modal button:has-text('CONFIRM')",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() > 0 and locator.is_visible():
+                locator.click(timeout=2000)
+                page.wait_for_timeout(700)
+                return True
+    return False
+
+
+def _attempt_auto_cancel_wrong_booking(page, target_date: datetime) -> bool:
+    """Best-effort rollback when receipt confirms a wrong booking."""
+    modal_text = _booking_success_modal_text(page)
+    text_norm = modal_text.lower()
+    if not modal_text:
+        print("⚠️ Auto-cancel skipped: booking success modal not visible.")
+        return False
+
+    time_token = _parse_receipt_time_token(modal_text)
+    receipt_md = _parse_receipt_month_day(modal_text)
+    print(f"🧯 Attempting auto-cancel of wrong booking (receipt time token='{time_token or 'unknown'}').")
+
+    if not _close_booking_success_modal(page):
+        print("⚠️ Auto-cancel could not close booking success modal.")
+        return False
+
+    # If the receipt shows a different day than target, navigate there to cancel the exact session.
+    if receipt_md and (receipt_md[0] != target_date.month or receipt_md[1] != target_date.day):
+        wrong_date = datetime(target_date.year, receipt_md[0], receipt_md[1])
+        with suppress(Exception):
+            _select_target_day(page, wrong_date)
+            _ensure_target_day_locked(page, wrong_date, retries=2)
+            _assert_exact_target_day(page, wrong_date)
+
+    rows = page.locator("div.session-row-view")
+    for i in range(rows.count()):
+        row = rows.nth(i)
+        with suppress(Exception):
+            text = re.sub(r"\s+", " ", (row.inner_text(timeout=800) or "").strip().lower())
+            if "yoga sculpt" not in text or "flatiron" not in text:
+                continue
+            if time_token and time_token not in re.sub(r"\s+", "", text):
+                continue
+            cta = _row_cta_text(row)
+            if cta not in {"booked", "cancel class", "cancel"}:
+                continue
+            print(f"🧯 Found wrong booked row candidate for rollback (cta='{cta}').")
+            row.scroll_into_view_if_needed()
+            clicked = False
+            for selector in ["button", "div.session-card_sessionCardBtn__FQT3Z", "a"]:
+                loc = row.locator(selector)
+                with suppress(Exception):
+                    for j in range(loc.count()):
+                        candidate = loc.nth(j)
+                        if not candidate.is_visible():
+                            continue
+                        label = re.sub(r"\s+", " ", (candidate.inner_text(timeout=400) or "").strip().lower())
+                        if label in {"booked", "cancel class", "cancel"}:
+                            candidate.click(timeout=3000)
+                            clicked = True
+                            break
+                if clicked:
+                    break
+
+            if not clicked:
+                continue
+            page.wait_for_timeout(500)
+            if _cancel_modal_present(page):
+                if _confirm_cancel_modal(page):
+                    print("🧯 Auto-cancel submitted for wrong booking.")
+                    return True
+                print("⚠️ Auto-cancel modal appeared but confirm action was not found.")
+                return False
+            # Some UIs cancel immediately from the row without a second confirm modal.
+            page.wait_for_timeout(800)
+            refreshed_cta = _row_cta_text(row)
+            if refreshed_cta == "book":
+                print("🧯 Auto-cancel completed (CTA returned to BOOK).")
+                return True
+            print(f"⚠️ Auto-cancel click did not produce expected confirmation (cta='{refreshed_cta}').")
+            return False
+
+    print("⚠️ Auto-cancel could not find the wrong booked row to rollback.")
+    return False
+
+
 def _validate_booking_receipt(page, target_date: datetime) -> None:
     """
     Ensure the visible booking confirmation modal matches the intended class/day.
@@ -1329,7 +1462,14 @@ def main():
 
                                     book.click(timeout=5000)
                                     _wait_for_booking_confirmation(page, row_sig, timeout_ms=12000)
-                                    _validate_booking_receipt(page, target_date)
+                                    try:
+                                        _validate_booking_receipt(page, target_date)
+                                    except Exception as receipt_err:
+                                        with suppress(Exception):
+                                            _save_debug_screenshot(page, "wrong_booking_receipt")
+                                        canceled = _attempt_auto_cancel_wrong_booking(page, target_date)
+                                        suffix = " Auto-cancel attempted." if canceled else " Auto-cancel failed."
+                                        raise RuntimeError(f"{receipt_err}{suffix}")
                                     print("✅ Clicked BOOK button.")
                                 break
                             except Exception as inner:
