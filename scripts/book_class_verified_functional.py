@@ -1344,6 +1344,41 @@ def main():
                     rows = page.locator("div.session-row-view")
                     target_time_token = _resolve_target_time_token(target_date)
 
+                    def dump_candidate_rows(limit: int = 20) -> None:
+                        """Log visible YS/Flatiron rows to diagnose target matching misses."""
+                        with suppress(Exception):
+                            _assert_exact_target_day(page, target_date)
+                        print(f"🔎 Candidate row dump for target day {target_date.strftime('%a, %b %d')} (limit {limit})")
+                        seen = 0
+                        row_count = 0
+                        with suppress(Exception):
+                            row_count = rows.count()
+                        for i in range(row_count):
+                            if seen >= limit:
+                                break
+                            try:
+                                row = rows.nth(i)
+                                text = re.sub(r"\s+", " ", (row.inner_text(timeout=800) or "").strip())
+                                if not text:
+                                    continue
+                                text_norm = text.lower()
+                                if "yoga sculpt" not in text_norm or "flatiron" not in text_norm:
+                                    continue
+                                cta = _row_cta_text(row) or "none"
+                                time_match = re.search(r"\b\d{1,2}:\d{2}\s*[ap]m\b", text_norm)
+                                row_time = time_match.group(0) if time_match else "unknown"
+                                print(
+                                    "   • "
+                                    f"time={row_time} cta={cta} "
+                                    f"matches_target_time={'yes' if target_time_token in re.sub(r'\\s+', '', text_norm) else 'no'} "
+                                    f"text={text[:220]}"
+                                )
+                                seen += 1
+                            except Exception:
+                                continue
+                        if seen == 0:
+                            print("   • No visible Flatiron YS Sculpt rows found in current DOM snapshot.")
+
                     def find_row():
                         matched_but_unbookable = []
                         for attempt in range(26):
@@ -1394,6 +1429,7 @@ def main():
                     row, matched_but_unbookable = find_row()
                     if row is None:
                         _save_debug_screenshot(page, "target_class_not_found")
+                        dump_candidate_rows()
                         if matched_but_unbookable:
                             samples = ", ".join(
                                 [
