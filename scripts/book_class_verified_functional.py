@@ -1215,20 +1215,17 @@ def main():
                     row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
 
-                    row_sig = _row_signature(row)
-                    book = None
-                    ctas = row.locator("div.session-card_sessionCardBtn__FQT3Z")
-                    for i in range(ctas.count()):
-                        candidate = ctas.nth(i)
-                        with suppress(Exception):
-                            if not candidate.is_visible():
-                                continue
-                            label = re.sub(r"\s+", " ", (candidate.inner_text(timeout=400) or "").strip().lower())
-                            if label == "book":
-                                book = candidate
-                                break
-                    if book is None:
-                        buttons = row.locator("button")
+                    def find_visible_book_cta(session_row):
+                        ctas = session_row.locator("div.session-card_sessionCardBtn__FQT3Z")
+                        for i in range(ctas.count()):
+                            candidate = ctas.nth(i)
+                            with suppress(Exception):
+                                if not candidate.is_visible():
+                                    continue
+                                label = re.sub(r"\s+", " ", (candidate.inner_text(timeout=400) or "").strip().lower())
+                                if label == "book":
+                                    return candidate
+                        buttons = session_row.locator("button")
                         for i in range(buttons.count()):
                             candidate = buttons.nth(i)
                             with suppress(Exception):
@@ -1236,23 +1233,61 @@ def main():
                                     continue
                                 label = re.sub(r"\s+", " ", (candidate.inner_text(timeout=400) or "").strip().lower())
                                 if label == "book":
-                                    book = candidate
-                                    break
-                    try:
-                        _assert_target_day_before_book(page, target_date)
-                        if _cancel_modal_present(page):
-                            _dismiss_cancel_modal_safe(page)
-                            raise RuntimeError("Cancel modal was already open before booking click.")
+                                    return candidate
+                        return None
 
-                        if not execute_booking:
-                            print("🧪 Dry run complete — BOOK click skipped (set EXECUTE_BOOKING=true to execute).")
-                        else:
-                            if book is None:
-                                raise RuntimeError("Exact 'BOOK' CTA not found on matched row.")
-                            book.scroll_into_view_if_needed()
-                            book.click(timeout=5000)
-                            _wait_for_booking_confirmation(page, row_sig, timeout_ms=12000)
-                            print("✅ Clicked BOOK button.")
+                    row_sig = _row_signature(row)
+                    book = find_visible_book_cta(row)
+                    try:
+                        for click_attempt in range(3):
+                            try:
+                                _assert_target_day_before_book(page, target_date)
+                                if _cancel_modal_present(page):
+                                    _dismiss_cancel_modal_safe(page)
+                                    raise RuntimeError("Cancel modal was already open before booking click.")
+
+                                if not execute_booking:
+                                    print("🧪 Dry run complete — BOOK click skipped (set EXECUTE_BOOKING=true to execute).")
+                                else:
+                                    if book is None:
+                                        raise RuntimeError("Exact 'BOOK' CTA not found on matched row.")
+                                    book.scroll_into_view_if_needed()
+                                    book.click(timeout=5000)
+                                    _wait_for_booking_confirmation(page, row_sig, timeout_ms=12000)
+                                    print("✅ Clicked BOOK button.")
+                                break
+                            except Exception as inner:
+                                message = str(inner)
+                                recoverable_day_reset = (
+                                    "Active day mismatch" in message
+                                    or "Target day assertion failed" in message
+                                    or "Target date lock could not be maintained" in message
+                                )
+                                if not recoverable_day_reset or click_attempt == 2:
+                                    raise
+
+                                print(
+                                    f"↩️ Target day flipped before BOOK click "
+                                    f"(attempt {click_attempt + 1}/3) — recovering and retrying."
+                                )
+                                _save_debug_screenshot(page, f"day_flip_before_book_{click_attempt + 1}")
+                                _select_target_day(page, target_date)
+                                _ensure_target_day_locked(page, target_date, retries=2)
+                                _assert_exact_target_day(page, target_date)
+                                _prime_session_scroll(page)
+
+                                recovered_row = _find_row_by_signature(page, row_sig)
+                                if recovered_row is None:
+                                    recovered_row, _ = find_row()
+                                if recovered_row is None:
+                                    raise RuntimeError("Lost target row after day-reset recovery.")
+
+                                row = recovered_row
+                                row.scroll_into_view_if_needed()
+                                row_sig = _row_signature(row)
+                                book = find_visible_book_cta(row)
+                                if book is None:
+                                    raise RuntimeError("Recovered target row but BOOK CTA is not visible.")
                     except Exception as e:
                         _save_debug_screenshot(page, "book_click_failed")
                         raise RuntimeError(f"BOOK click failed: {e}") from e
