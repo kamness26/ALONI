@@ -1,6 +1,8 @@
 from contextlib import suppress
 from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 import os, re, time
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -736,6 +738,68 @@ def _row_signature(row) -> dict[str, str]:
     return {"href": href, "text": text_norm}
 
 
+def _parse_time_value(raw: str) -> datetime:
+    """Parse a clock time like '6:15 PM' or '06:15PM'."""
+    value = re.sub(r"\s+", " ", (raw or "").strip().upper())
+    for fmt in ("%I:%M %p", "%I:%M%p", "%I %p", "%I%p"):
+        with suppress(ValueError):
+            return datetime.strptime(value, fmt)
+    raise ValueError(f"Unsupported time format: {raw!r}")
+
+
+def _format_row_time_token(value: datetime) -> str:
+    """Normalize to the session row token format used in inner_text matching."""
+    return re.sub(r"\s+", "", value.strftime("%I:%M %p").lstrip("0").lower())
+
+
+def _resolve_target_time_token(target_date: datetime) -> str:
+    """
+    Resolve the row-matching time token in local studio time.
+
+    Priority:
+    1) TARGET_CLASS_TIME_LOCAL (+ TARGET_CLASS_TZ, default America/New_York)
+    2) TARGET_CLASS_TIME_UTC converted to local timezone for target_date
+    """
+    local_tz_name = (os.getenv("TARGET_CLASS_TZ") or "America/New_York").strip()
+    local_tz = ZoneInfo(local_tz_name)
+
+    local_raw = (os.getenv("TARGET_CLASS_TIME_LOCAL") or "").strip()
+    if local_raw:
+        parsed_local = _parse_time_value(local_raw)
+        local_dt = datetime(
+            target_date.year,
+            target_date.month,
+            target_date.day,
+            parsed_local.hour,
+            parsed_local.minute,
+            tzinfo=local_tz,
+        )
+        token = _format_row_time_token(local_dt)
+        print(
+            f"🕒 Target class time (local {local_tz_name}): "
+            f"{local_dt.strftime('%-I:%M %p %Z')} -> token '{token}'"
+        )
+        return token
+
+    utc_raw = (os.getenv("TARGET_CLASS_TIME_UTC") or "11:15 PM").strip()
+    parsed_utc = _parse_time_value(utc_raw)
+    utc_dt = datetime(
+        target_date.year,
+        target_date.month,
+        target_date.day,
+        parsed_utc.hour,
+        parsed_utc.minute,
+        tzinfo=dt_timezone.utc,
+    )
+    local_dt = utc_dt.astimezone(local_tz)
+    token = _format_row_time_token(local_dt)
+    print(
+        f"🕒 Target class time: {utc_dt.strftime('%-I:%M %p UTC')} "
+        f"-> {local_dt.strftime('%-I:%M %p %Z')} ({local_tz_name}) -> token '{token}'"
+    )
+    return token
+
+
 def _find_row_by_signature(page, sig: dict[str, str]):
     """Reacquire the same row after click/reload."""
     rows = page.locator("div.session-row-view")
@@ -794,6 +858,18 @@ def _row_has_forbidden_status(text_norm: str) -> bool:
         "cancel class",
     ]
     return any(token in text_norm for token in forbidden)
+
+
+def _row_forbidden_tokens(text_norm: str) -> list[str]:
+    forbidden = [
+        "booked",
+        "waitlisted",
+        "join waitlist",
+        "session started",
+        "class full",
+        "cancel class",
+    ]
+    return [token for token in forbidden if token in text_norm]
 
 
 def _cancel_modal_present(page) -> bool:
@@ -1072,11 +1148,10 @@ def main():
                 # Locate target class and book
                 try:
                     rows = page.locator("div.session-row-view")
-                    TARGET_CLASS_LOCAL = (os.getenv("TARGET_CLASS_TIME_UTC") or "11:15 PM").strip()
-                    print(f"🕒 Target time (UTC): {TARGET_CLASS_LOCAL}")
-                    target_time_token = re.sub(r"\s+", "", TARGET_CLASS_LOCAL.lower())
+                    target_time_token = _resolve_target_time_token(target_date)
 
                     def find_row():
+                        matched_but_unbookable = []
                         for attempt in range(26):
                             if attempt % 4 == 0:
                                 _ensure_target_day_locked(page, target_date, retries=1)
@@ -1100,23 +1175,42 @@ def main():
                                         and "flatiron" in text_norm
                                         and target_time_token in time_norm
                                     ):
-                                        if _row_has_forbidden_status(text_norm):
-                                            print("⛔ Matched row has forbidden status; skipping.")
-                                            continue
                                         cta_text = _row_cta_text(rows.nth(i))
-                                        if cta_text != "book":
-                                            print(f"⛔ Matched row CTA is '{cta_text}', not 'book'; skipping.")
+                                        if cta_text == "book":
+                                            print("✅ Matched target row with visible BOOK CTA.")
+                                            return rows.nth(i), matched_but_unbookable
+
+                                        forbidden_hits = _row_forbidden_tokens(text_norm)
+                                        if forbidden_hits:
+                                            print(
+                                                "⛔ Matched row not bookable "
+                                                f"(cta='{cta_text or 'none'}', forbidden={forbidden_hits}); skipping."
+                                            )
+                                            matched_but_unbookable.append((cta_text, forbidden_hits))
                                             continue
-                                        return rows.nth(i)
+
+                                        print(f"⛔ Matched row CTA is '{cta_text or 'none'}', not 'book'; skipping.")
+                                        matched_but_unbookable.append((cta_text, []))
                                 except:
                                     continue
                             _scroll_session_list(page, 900)
                             page.wait_for_timeout(300)
-                        return None
+                        return None, matched_but_unbookable
 
-                    row = find_row()
+                    row, matched_but_unbookable = find_row()
                     if row is None:
                         _save_debug_screenshot(page, "target_class_not_found")
+                        if matched_but_unbookable:
+                            samples = ", ".join(
+                                [
+                                    f"cta={cta or 'none'} forbidden={hits or '[]'}"
+                                    for cta, hits in matched_but_unbookable[:3]
+                                ]
+                            )
+                            raise RuntimeError(
+                                "Target class was found but not bookable. "
+                                f"Examples: {samples}"
+                            )
                         raise RuntimeError("Target class not found on target date.")
                     row.scroll_into_view_if_needed()
                     print("✅ Scrolled to target class row.")
