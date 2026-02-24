@@ -696,12 +696,11 @@ def _ensure_target_day_locked(page, target_date: datetime, retries: int = 3) -> 
 
 def _assert_target_day_before_book(page, target_date: datetime) -> None:
     """Hard gate: never click BOOK unless the target day is still selected."""
-    _assert_exact_target_day(page, target_date)
-    _ensure_target_day_locked(page, target_date, retries=2)
     try:
+        _ensure_target_day_locked(page, target_date, retries=2)
         _wait_for_day_lock(page, target_date, timeout=2000)
         _assert_exact_target_day(page, target_date)
-    except PlaywrightTimeout as exc:
+    except (PlaywrightTimeout, RuntimeError) as exc:
         _save_debug_screenshot(page, "target_day_assert_failed")
         raise RuntimeError("Target day assertion failed immediately before BOOK click.") from exc
 
@@ -970,7 +969,7 @@ def _select_target_day(page, target_date: datetime) -> None:
 
 
 def _prime_session_scroll(page) -> None:
-    """Scroll the session list slightly to lock the selected day's classes in place."""
+    """Nudge the session list without changing its net position."""
     try:
         page.locator("div.session-row-view").first.wait_for(state="visible", timeout=10000)
     except PlaywrightTimeout:
@@ -978,10 +977,28 @@ def _prime_session_scroll(page) -> None:
         return
 
     page.wait_for_timeout(200)
-    _scroll_session_list(page, 800)
-    page.wait_for_timeout(200)
-    _scroll_session_list(page, 800)
-    print("🖱️ Primed session list scroll for selected day.")
+    scrollers = [
+        ".SessionPickerCalendar_calendarScroll__",
+        "div[class*='calendarScroll']",
+        "div[class*='sessionList']",
+    ]
+    for selector in scrollers:
+        locator = page.locator(selector).first
+        with suppress(Exception):
+            if locator.count() == 0 or not locator.is_visible():
+                continue
+            locator.evaluate(
+                """(el) => {
+                    if (!(el instanceof HTMLElement)) return;
+                    const before = el.scrollTop;
+                    el.scrollBy(0, 220);
+                    el.scrollTop = before;
+                }"""
+            )
+            print("🖱️ Primed session list scroll for selected day.")
+            return
+
+    print("⚠️ Session scroller not found for prime-scroll; skipping nudge.")
 
 
 def _ensure_studio_filter(page, studio_name: str) -> None:
@@ -1276,7 +1293,6 @@ def main():
                                 _select_target_day(page, target_date)
                                 _ensure_target_day_locked(page, target_date, retries=2)
                                 _assert_exact_target_day(page, target_date)
-                                _prime_session_scroll(page)
 
                                 recovered_row, _ = find_row()
                                 if recovered_row is None:
