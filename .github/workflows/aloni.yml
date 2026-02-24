@@ -19,6 +19,8 @@ jobs:
       COREPOWER_PASSWORD: ${{ secrets.COREPOWER_PASSWORD }}
       CI: "true"
       EXECUTE_BOOKING: ${{ github.event_name == 'schedule' && 'true' || (github.event_name == 'workflow_dispatch' && inputs.execute_booking || 'false') }}
+      TARGET_CLASS_TIME_LOCAL: "6:15 PM"
+      TARGET_CLASS_TZ: "America/New_York"
 
     steps:
       - name: 🧘 Checkout repository
