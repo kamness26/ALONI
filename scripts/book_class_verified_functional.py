@@ -925,6 +925,36 @@ def _confirm_cancel_modal(page) -> bool:
     return False
 
 
+def _clear_cancel_modal_state(page) -> bool:
+    """Best-effort close of any visible cancel modal before continuing."""
+    if not _cancel_modal_present(page):
+        return False
+
+    # Prefer non-destructive dismissal first.
+    if _dismiss_cancel_modal_safe(page):
+        page.wait_for_timeout(250)
+        return True
+
+    close_selectors = [
+        "div.cpy-modal button[aria-label*='close' i]",
+        "div.cpy-modal button:has(img[alt*='Close' i])",
+        "div.cpy-modal button",
+    ]
+    for selector in close_selectors:
+        loc = page.locator(selector).first
+        with suppress(Exception):
+            if loc.count() > 0 and loc.is_visible():
+                label = re.sub(r"\s+", " ", (loc.inner_text(timeout=300) or "").strip().lower())
+                # Avoid destructive confirmation buttons.
+                if label in {"cancel class", "yes, cancel", "confirm"}:
+                    continue
+                loc.click(timeout=1500)
+                page.wait_for_timeout(300)
+                if not _cancel_modal_present(page):
+                    return True
+    return not _cancel_modal_present(page)
+
+
 def _attempt_auto_cancel_wrong_booking(page, target_date: datetime) -> bool:
     """Best-effort rollback when receipt confirms a wrong booking."""
     modal_text = _booking_success_modal_text(page)
@@ -984,6 +1014,9 @@ def _attempt_auto_cancel_wrong_booking(page, target_date: datetime) -> bool:
             page.wait_for_timeout(500)
             if _cancel_modal_present(page):
                 if _confirm_cancel_modal(page):
+                    # Ensure no lingering cancel modal blocks the retry path.
+                    with suppress(Exception):
+                        _clear_cancel_modal_state(page)
                     print("🧯 Auto-cancel submitted for wrong booking.")
                     return True
                 print("⚠️ Auto-cancel modal appeared but confirm action was not found.")
@@ -1538,7 +1571,14 @@ def main():
                                     "Booking confirmation modal shows a different date than target" in message
                                     and "Auto-cancel attempted and succeeded" in message
                                 )
-                                if (not recoverable_day_reset and not recoverable_wrong_booking) or click_attempt == 2:
+                                recoverable_stale_cancel_modal = (
+                                    "Cancel modal was already open before booking click." in message
+                                )
+                                if (
+                                    not recoverable_day_reset
+                                    and not recoverable_wrong_booking
+                                    and not recoverable_stale_cancel_modal
+                                ) or click_attempt == 2:
                                     raise
 
                                 if recoverable_wrong_booking:
@@ -1548,6 +1588,17 @@ def main():
                                     )
                                     with suppress(Exception):
                                         _save_debug_screenshot(page, f"wrong_booking_retry_{click_attempt + 1}")
+                                    with suppress(Exception):
+                                        _clear_cancel_modal_state(page)
+                                elif recoverable_stale_cancel_modal:
+                                    print(
+                                        f"🧹 Clearing stale cancel modal before retry "
+                                        f"(attempt {click_attempt + 1}/3)."
+                                    )
+                                    with suppress(Exception):
+                                        _save_debug_screenshot(page, f"stale_cancel_modal_{click_attempt + 1}")
+                                    with suppress(Exception):
+                                        _clear_cancel_modal_state(page)
                                 else:
                                     print(
                                         f"↩️ Target day flipped before BOOK click "
