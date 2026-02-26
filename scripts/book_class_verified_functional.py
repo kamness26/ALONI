@@ -751,9 +751,9 @@ def _format_row_time_token(value: datetime) -> str:
     return re.sub(r"\s+", "", value.strftime("%I:%M %p").lstrip("0").lower())
 
 
-def _resolve_target_time_token(target_date: datetime) -> str:
+def _resolve_target_time_tokens(target_date: datetime) -> dict[str, str]:
     """
-    Resolve the row-matching time token in local studio time.
+    Resolve row-matching time tokens in both local studio time and UTC.
 
     Priority:
     1) TARGET_CLASS_TIME_LOCAL (+ TARGET_CLASS_TZ, default America/New_York)
@@ -773,12 +773,15 @@ def _resolve_target_time_token(target_date: datetime) -> str:
             parsed_local.minute,
             tzinfo=local_tz,
         )
-        token = _format_row_time_token(local_dt)
+        local_token = _format_row_time_token(local_dt)
+        utc_dt = local_dt.astimezone(dt_timezone.utc)
+        utc_token = _format_row_time_token(utc_dt)
         print(
             f"🕒 Target class time (local {local_tz_name}): "
-            f"{local_dt.strftime('%-I:%M %p %Z')} -> token '{token}'"
+            f"{local_dt.strftime('%-I:%M %p %Z')} -> local token '{local_token}', "
+            f"UTC token '{utc_token}'"
         )
-        return token
+        return {"local": local_token, "utc": utc_token}
 
     utc_raw = (os.getenv("TARGET_CLASS_TIME_UTC") or "11:15 PM").strip()
     parsed_utc = _parse_time_value(utc_raw)
@@ -791,12 +794,14 @@ def _resolve_target_time_token(target_date: datetime) -> str:
         tzinfo=dt_timezone.utc,
     )
     local_dt = utc_dt.astimezone(local_tz)
-    token = _format_row_time_token(local_dt)
+    local_token = _format_row_time_token(local_dt)
+    utc_token = _format_row_time_token(utc_dt)
     print(
         f"🕒 Target class time: {utc_dt.strftime('%-I:%M %p UTC')} "
-        f"-> {local_dt.strftime('%-I:%M %p %Z')} ({local_tz_name}) -> token '{token}'"
+        f"-> {local_dt.strftime('%-I:%M %p %Z')} ({local_tz_name}) "
+        f"-> local token '{local_token}', UTC token '{utc_token}'"
     )
-    return token
+    return {"local": local_token, "utc": utc_token}
 
 
 def _find_row_by_signature(page, sig: dict[str, str]):
@@ -1342,7 +1347,16 @@ def main():
                 # Locate target class and book
                 try:
                     rows = page.locator("div.session-row-view")
-                    target_time_token = _resolve_target_time_token(target_date)
+                    target_time_tokens = _resolve_target_time_tokens(target_date)
+                    target_time_local = target_time_tokens["local"]
+                    target_time_utc = target_time_tokens["utc"]
+
+                    def _row_matches_target_time(text_norm: str) -> bool:
+                        time_norm = re.sub(r"\s+", "", text_norm)
+                        row_shows_utc = " utc" in text_norm
+                        primary = target_time_utc if row_shows_utc else target_time_local
+                        secondary = target_time_local if row_shows_utc else target_time_utc
+                        return primary in time_norm or secondary in time_norm
 
                     def dump_candidate_rows(limit: int = 20) -> None:
                         """Log visible YS/Flatiron rows to diagnose target matching misses."""
@@ -1370,7 +1384,7 @@ def main():
                                 print(
                                     "   • "
                                     f"time={row_time} cta={cta} "
-                                    f"matches_target_time={'yes' if target_time_token in re.sub(r'\\s+', '', text_norm) else 'no'} "
+                                    f"matches_target_time={'yes' if _row_matches_target_time(text_norm) else 'no'} "
                                     f"text={text[:220]}"
                                 )
                                 seen += 1
@@ -1381,6 +1395,7 @@ def main():
 
                     def find_row():
                         matched_but_unbookable = []
+                        already_booked_target = False
                         for attempt in range(26):
                             if attempt % 4 == 0:
                                 _ensure_target_day_locked(page, target_date, retries=1)
@@ -1398,19 +1413,22 @@ def main():
                                 try:
                                     text = rows.nth(i).inner_text(timeout=1000).lower()
                                     text_norm = re.sub(r"\s+", " ", text).strip()
-                                    time_norm = re.sub(r"\s+", "", text_norm)
                                     if (
                                         "ys - yoga sculpt" in text_norm
                                         and "flatiron" in text_norm
-                                        and target_time_token in time_norm
+                                        and _row_matches_target_time(text_norm)
                                     ):
                                         cta_text = _row_cta_text(rows.nth(i))
                                         if cta_text == "book":
                                             print("✅ Matched target row with visible BOOK CTA.")
-                                            return rows.nth(i), matched_but_unbookable
+                                            return rows.nth(i), matched_but_unbookable, False
 
                                         forbidden_hits = _row_forbidden_tokens(text_norm)
                                         if forbidden_hits:
+                                            if "booked" in forbidden_hits or cta_text == "booked":
+                                                already_booked_target = True
+                                                print("ℹ️ Exact target class is already booked; continuing search for a bookable duplicate.")
+                                                continue
                                             print(
                                                 "⛔ Matched row not bookable "
                                                 f"(cta='{cta_text or 'none'}', forbidden={forbidden_hits}); skipping."
@@ -1424,10 +1442,13 @@ def main():
                                     continue
                             _scroll_session_list(page, 900)
                             page.wait_for_timeout(300)
-                        return None, matched_but_unbookable
+                        return None, matched_but_unbookable, already_booked_target
 
-                    row, matched_but_unbookable = find_row()
+                    row, matched_but_unbookable, already_booked_target = find_row()
                     if row is None:
+                        if already_booked_target:
+                            print("✅ Target class is already booked (idempotent success).")
+                            return
                         _save_debug_screenshot(page, "target_class_not_found")
                         dump_candidate_rows()
                         if matched_but_unbookable:
@@ -1477,7 +1498,7 @@ def main():
                                     raise RuntimeError("Cancel modal was already open before booking click.")
 
                                 # Reacquire the target row/CTA after the final day lock to avoid stale or drifted locators.
-                                fresh_row, _ = find_row()
+                                fresh_row, _, _ = find_row()
                                 if fresh_row is None:
                                     raise RuntimeError("Target row could not be re-found immediately before click.")
                                 row = fresh_row
@@ -1537,7 +1558,7 @@ def main():
                                 _ensure_target_day_locked(page, target_date, retries=2)
                                 _assert_exact_target_day(page, target_date)
 
-                                recovered_row, _ = find_row()
+                                recovered_row, _, _ = find_row()
                                 if recovered_row is None:
                                     recovered_row = _find_row_by_signature(page, row_sig)
                                 if recovered_row is None:
