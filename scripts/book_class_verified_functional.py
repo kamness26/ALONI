@@ -20,8 +20,48 @@ def _save_debug_screenshot(page, label: str) -> None:
         page.screenshot(path=f"screenshots/{stamp}_{label}.png", full_page=False)
 
 
+def _parse_month_day_label(label: str, reference_date: datetime | None = None) -> datetime | None:
+    """Parse labels like 'Mon, Mar 16' into a concrete date near reference_date."""
+    text = re.sub(r"\s+", " ", (label or "")).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.strptime(text, "%a, %b %d")
+    except ValueError:
+        return None
+
+    ref = reference_date or datetime.now()
+    candidate = parsed.replace(year=ref.year)
+    # Handle year rollover around Jan/Dec boundaries.
+    if candidate.date() < (ref - timedelta(days=200)).date():
+        candidate = candidate.replace(year=ref.year + 1)
+    elif candidate.date() > (ref + timedelta(days=200)).date():
+        candidate = candidate.replace(year=ref.year - 1)
+    return candidate
+
+
+def _target_day_labels(target_date: datetime) -> set[str]:
+    return {
+        target_date.strftime("%a, %b %d"),
+        target_date.strftime("%a, %b %d").replace(" 0", " "),
+    }
+
+
+def _label_matches_target_day(label: str | None, target_date: datetime) -> bool:
+    if not label:
+        return False
+    text = re.sub(r"\s+", " ", label).strip()
+    return text in _target_day_labels(target_date)
+
+
 def _read_selected_schedule_date(page) -> datetime | None:
     """Read the selected schedule date from heading text like 'Sat, Feb 28'."""
+    # Sticky day bar is usually the most reliable selected-day source in this UI.
+    day_bar_label = _read_days_bar_label(page)
+    day_bar_date = _parse_month_day_label(day_bar_label)
+    if day_bar_date:
+        return day_bar_date
+
     heading_selectors = [
         "div.schedule-page h2",
         "main h2",
@@ -39,26 +79,7 @@ def _read_selected_schedule_date(page) -> datetime | None:
         if text_value:
             break
 
-    # Sticky day bar is usually the most reliable selected-day source in this UI.
-    if not text_value:
-        text_value = _read_days_bar_label(page)
-
-    if not text_value:
-        return None
-
-    try:
-        parsed = datetime.strptime(text_value, "%a, %b %d")
-    except ValueError:
-        return None
-
-    now = datetime.now()
-    candidate = parsed.replace(year=now.year)
-    # Handle year rollover around Jan/Dec boundaries.
-    if candidate.date() < (now - timedelta(days=200)).date():
-        candidate = candidate.replace(year=now.year + 1)
-    elif candidate.date() > (now + timedelta(days=200)).date():
-        candidate = candidate.replace(year=now.year - 1)
-    return candidate
+    return _parse_month_day_label(text_value)
 
 
 def _is_target_day_selected(page, target_date: datetime) -> bool:
@@ -67,24 +88,7 @@ def _is_target_day_selected(page, target_date: datetime) -> bool:
     if selected and selected.date() == target_date.date():
         return True
 
-    target_label_long = target_date.strftime("%a, %b %d").lower()
-    target_label_short = target_label_long.replace(" 0", " ")
-    target_compact = target_label_long.replace(" 0", " ")
-
-    daybar_selectors = [
-        "div.days-bar",
-        "div[class*='days-bar']",
-    ]
-    for selector in daybar_selectors:
-        locator = page.locator(selector).first
-        with suppress(Exception):
-            if locator.count() == 0 or not locator.is_visible():
-                continue
-            text = (locator.inner_text(timeout=600) or "").strip().lower()
-            text = re.sub(r"\s+", " ", text)
-            if text in {target_label_long, target_compact, target_label_short}:
-                return True
-    return False
+    return _label_matches_target_day(_read_days_bar_label(page), target_date)
 
 
 def _read_days_bar_label(page) -> str | None:
@@ -109,11 +113,8 @@ def _read_days_bar_label(page) -> str | None:
 def _assert_exact_target_day(page, target_date: datetime) -> None:
     """Require exact selected day match before any booking actions."""
     label = _read_days_bar_label(page)
-    target_labels = {
-        target_date.strftime("%a, %b %d"),
-        target_date.strftime("%a, %b %d").replace(" 0", " "),
-    }
-    if not label or label not in target_labels:
+    target_labels = _target_day_labels(target_date)
+    if not _label_matches_target_day(label, target_date):
         _save_debug_screenshot(page, "target_day_exact_mismatch")
         raise RuntimeError(
             f"Active day mismatch. Expected one of {sorted(target_labels)}, got '{label or 'none'}'."
@@ -176,8 +177,8 @@ def _wait_for_day_lock(page, target_date: datetime, timeout: float = 4000) -> No
                 const combined = `${text} ${aria}`.trim();
                 const hasDay = combined.includes(dayPlain) || combined.includes(dayPadded);
                 const hasMonth = months.some((month) => combined.includes(month));
-                // Some selected day chips only expose weekday/day without month.
-                return hasDay && (hasMonth || combined.includes('mon') || combined.includes('tue') || combined.includes('wed') || combined.includes('thu') || combined.includes('fri') || combined.includes('sat') || combined.includes('sun'));
+                // Require concrete month+day evidence; weekday-only matches are too loose.
+                return hasDay && hasMonth;
             });
         }
         """,
@@ -1120,6 +1121,7 @@ def _select_target_day(page, target_date: datetime) -> None:
     if _navigate_calendar_to_target(page, target_date, max_steps=28):
         with suppress(PlaywrightTimeout):
             _wait_for_day_lock(page, target_date, timeout=2500)
+        _assert_exact_target_day(page, target_date)
         print(f"✅ Reached target calendar day via deterministic navigation: {target_date.strftime('%a, %b %d')}")
         return
 
